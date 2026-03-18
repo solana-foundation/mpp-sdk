@@ -63,9 +63,8 @@ export function charge(parameters: charge.Parameters) {
 
   const method = Method.toClient(Methods.charge, {
     async createCredential({ challenge }) {
-      const { amount, methodDetails } = challenge.request
+      const { amount, currency, recipient, methodDetails } = challenge.request
       const {
-        recipient,
         network,
         splToken,
         decimals,
@@ -79,8 +78,6 @@ export function charge(parameters: charge.Parameters) {
         DEFAULT_RPC_URLS[network || 'mainnet-beta'] ??
         DEFAULT_RPC_URLS['mainnet-beta']
       const rpc = createSolanaRpc(rpcUrl)
-
-      const { currency } = challenge.request
       onProgress?.({
         type: 'challenge',
         recipient,

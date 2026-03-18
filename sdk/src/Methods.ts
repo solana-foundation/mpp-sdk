@@ -29,14 +29,16 @@ export const charge = Method.from({
     request: z.object({
       /** Amount in smallest unit (lamports for SOL, base units for SPL tokens). */
       amount: z.string(),
-      currency: z.optional(z.string()),
+      /** Identifies the unit for amount. "SOL" for native, or token symbol/mint (e.g. "USDC"). */
+      currency: z.string(),
+      /** Base58-encoded recipient public key. */
+      recipient: z.string(),
+      /** Human-readable memo describing the resource or service being paid for. */
       description: z.optional(z.string()),
+      /** Merchant's reference (e.g., order ID, invoice number) for reconciliation. */
+      externalId: z.optional(z.string()),
       methodDetails: z.object({
-        /** Base58-encoded recipient public key. */
-        recipient: z.string(),
-        /** Unique reference ID for this charge (server-generated, used for tracking). */
-        reference: z.string(),
-        /** Solana network: mainnet-beta, devnet, or localnet. */
+        /** Solana network: mainnet-beta, devnet, localnet, or surfnet. */
         network: z.optional(z.string()),
         /** SPL token mint address. If absent, payment is in native SOL. */
         splToken: z.optional(z.string()),
@@ -44,6 +46,8 @@ export const charge = Method.from({
         decimals: z.optional(z.number()),
         /** Token program address (TOKEN_PROGRAM or TOKEN_2022_PROGRAM). Defaults to TOKEN_PROGRAM. */
         tokenProgram: z.optional(z.string()),
+        /** Unique reference ID for this charge (server-generated, used for tracking). */
+        reference: z.string(),
         /** If true, server pays transaction fees. Client must use the server's feePayerKey. */
         feePayer: z.optional(z.boolean()),
         /** Server's base58-encoded public key for fee payment. Present when feePayer is true. */

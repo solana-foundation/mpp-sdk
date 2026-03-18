@@ -38,8 +38,8 @@ function signatureCredential(
       request: {
         amount: overrides.amount ?? '1000000',
         currency: overrides.splToken ? 'token' : 'SOL',
+        recipient: overrides.recipient ?? RECIPIENT,
         methodDetails: {
-          recipient: overrides.recipient ?? RECIPIENT,
           reference: overrides.reference ?? 'ref-1',
           network: 'devnet',
           ...(overrides.splToken
@@ -73,8 +73,8 @@ function transactionCredential(
       request: {
         amount: overrides.amount ?? '1000000',
         currency: overrides.splToken ? 'token' : 'SOL',
+        recipient: overrides.recipient ?? RECIPIENT,
         methodDetails: {
-          recipient: overrides.recipient ?? RECIPIENT,
           reference: overrides.reference ?? 'ref-1',
           network: 'devnet',
           ...(overrides.splToken
@@ -194,7 +194,7 @@ test('charge() does not throw for native SOL (no splToken)', () => {
 
 // ── Request generation ──
 
-test('request() generates a unique reference and populates methodDetails', async () => {
+test('request() generates a unique reference and populates fields', async () => {
   const method = charge({
     recipient: RECIPIENT,
     splToken: USDC_MINT,
@@ -203,19 +203,19 @@ test('request() generates a unique reference and populates methodDetails', async
     store,
   })
 
-  const stub = { recipient: '', reference: '' }
+  const stub = { reference: '' }
 
   const request1 = await method.request!({
     credential: null,
-    request: { amount: '1000000', methodDetails: stub },
+    request: { amount: '1000000', currency: 'USDC', recipient: '', methodDetails: stub },
   })
 
   const request2 = await method.request!({
     credential: null,
-    request: { amount: '500000', methodDetails: stub },
+    request: { amount: '500000', currency: 'USDC', recipient: '', methodDetails: stub },
   })
 
-  assert.equal(request1.methodDetails.recipient, RECIPIENT)
+  assert.equal(request1.recipient, RECIPIENT)
   assert.equal(request1.methodDetails.network, 'devnet')
   assert.equal(request1.methodDetails.splToken, USDC_MINT)
   assert.equal(request1.methodDetails.decimals, 6)
@@ -233,8 +233,9 @@ test('request() returns the challenge request when credential is present', async
 
   const challengeRequest = {
     amount: '1000000',
+    currency: 'SOL',
+    recipient: RECIPIENT,
     methodDetails: {
-      recipient: RECIPIENT,
       reference: 'existing-ref',
       network: 'devnet',
     },
@@ -242,7 +243,7 @@ test('request() returns the challenge request when credential is present', async
 
   const result = await method.request!({
     credential: { challenge: { request: challengeRequest } } as any,
-    request: { amount: '1000000', methodDetails: { recipient: '', reference: '' } },
+    request: { amount: '1000000', currency: 'SOL', recipient: '', methodDetails: { reference: '' } },
   })
 
   assert.equal(result.methodDetails.reference, 'existing-ref')
@@ -739,8 +740,8 @@ test('transaction: throws when transaction data is missing', async () => {
             request: {
               amount: '1000000',
               currency: 'SOL',
+              recipient: RECIPIENT,
               methodDetails: {
-                recipient: RECIPIENT,
                 reference: 'ref-1',
                 network: 'devnet',
               },
