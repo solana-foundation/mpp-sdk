@@ -8,8 +8,7 @@
  *
  * Run: npm run test:integration
  */
-import { test, before, after } from 'node:test';
-import assert from 'node:assert/strict';
+import { describe, test, expect, beforeAll, afterAll } from 'vitest';
 import http from 'node:http';
 import {
     appendTransactionMessageInstructions,
@@ -457,7 +456,7 @@ let recipientSigner: GeneratedSigner;
 let server: http.Server;
 let serverPort: number;
 
-before(async () => {
+beforeAll(async () => {
     const running = await isSurfpoolRunning();
     if (!running) {
         console.log('Surfpool not running on localhost:8899 — skipping integration tests.');
@@ -522,7 +521,7 @@ before(async () => {
     });
 });
 
-after(() => {
+afterAll(() => {
     server?.close();
 });
 
@@ -547,21 +546,18 @@ test('e2e: native SOL charge via pull mode (default)', async () => {
     const response = await mppx.fetch(`http://localhost:${serverPort}/test`);
     const data = await response.json();
 
-    assert.equal(response.status, 200);
-    assert.deepEqual(data, { paid: true });
+    expect(response.status).toBe(200);
+    expect(data).toEqual({ paid: true });
 
     // Verify progress events
-    assert.ok(events.includes('challenge'), 'should emit challenge');
-    assert.ok(events.includes('signing'), 'should emit signing');
-    assert.ok(events.includes('signed'), 'should emit signed');
+    expect(events).toContain('challenge');
+    expect(events).toContain('signing');
+    expect(events).toContain('signed');
 
     // Verify recipient received payment
     const balanceAfter = await getBalance(recipientSigner.address);
-    assert.ok(balanceAfter > balanceBefore, 'recipient balance should increase');
-    assert.ok(
-        balanceAfter - balanceBefore >= 1_000_000,
-        `expected >= 1000000 lamports increase, got ${balanceAfter - balanceBefore}`,
-    );
+    expect(balanceAfter).toBeGreaterThan(balanceBefore);
+    expect(balanceAfter - balanceBefore).toBeGreaterThanOrEqual(1_000_000);
 });
 
 test('e2e: native SOL charge via push mode', async () => {
@@ -581,14 +577,14 @@ test('e2e: native SOL charge via push mode', async () => {
     const response = await mppx.fetch(`http://localhost:${serverPort}/test`);
     const data = await response.json();
 
-    assert.equal(response.status, 200);
-    assert.deepEqual(data, { paid: true });
+    expect(response.status).toBe(200);
+    expect(data).toEqual({ paid: true });
 
     // Push mode should fire: challenge → signing → paying → confirming → paid
-    assert.ok(events.includes('challenge'), 'should emit challenge');
-    assert.ok(events.includes('signing'), 'should emit signing');
-    assert.ok(events.includes('paying'), 'should emit paying');
-    assert.ok(events.includes('paid'), 'should emit paid');
+    expect(events).toContain('challenge');
+    expect(events).toContain('signing');
+    expect(events).toContain('paying');
+    expect(events).toContain('paid');
 });
 
 test('e2e: multiple sequential charges succeed', async () => {
@@ -602,9 +598,9 @@ test('e2e: multiple sequential charges succeed', async () => {
     // Three sequential charges should all succeed (no replay issues)
     for (let i = 0; i < 3; i++) {
         const response = await mppx.fetch(`http://localhost:${serverPort}/test`);
-        assert.equal(response.status, 200, `request ${i + 1} should succeed`);
+        expect(response.status).toBe(200);
         const data = await response.json();
-        assert.deepEqual(data, { paid: true });
+        expect(data).toEqual({ paid: true });
     }
 });
 
@@ -617,11 +613,11 @@ test('e2e: receipt header is present on success', async () => {
     const mppx = ClientMppx.create({ methods: [clientMethod] });
 
     const response = await mppx.fetch(`http://localhost:${serverPort}/test`);
-    assert.equal(response.status, 200);
+    expect(response.status).toBe(200);
 
     // mppx attaches a receipt header
     const receiptHeader = response.headers.get('Payment-Receipt');
-    assert.ok(receiptHeader, 'response should have Payment-Receipt header');
+    expect(receiptHeader).toBeTruthy();
 });
 
 // ── Fee payer (server pays tx fees) ──
@@ -686,8 +682,8 @@ test('e2e: fee payer mode — server co-signs and pays fees', async () => {
         const response = await mppx.fetch(`http://localhost:${fpPort}/test`);
         const data = await response.json();
 
-        assert.equal(response.status, 200);
-        assert.deepEqual(data, { paid: true });
+        expect(response.status).toBe(200);
+        expect(data).toEqual({ paid: true });
 
         // Client should have paid exactly 1_000_000 lamports for the transfer,
         // but NOT the tx fee (the fee payer covered that).
@@ -696,11 +692,7 @@ test('e2e: fee payer mode — server co-signs and pays fees', async () => {
 
         // The client should have spent exactly the transfer amount (1_000_000 lamports).
         // Without fee payer, they'd also spend ~5000 lamports for the tx fee.
-        assert.equal(
-            clientSpent,
-            1_000_000,
-            `client should spend exactly 1000000 lamports (transfer only), got ${clientSpent}`,
-        );
+        expect(clientSpent).toBe(1_000_000);
     } finally {
         fpServer.close();
     }
@@ -736,31 +728,31 @@ test('e2e: session auto-open then update over repeated requests', async () => {
         const endpoint = `http://localhost:${harness.port}/session`;
 
         const firstResponse = await mppx.fetch(endpoint);
-        assert.equal(firstResponse.status, 200);
-        assert.deepEqual(await firstResponse.json(), { paid: true });
+        expect(firstResponse.status).toBe(200);
+        expect(await firstResponse.json()).toEqual({ paid: true });
 
         const firstReceipt = receiptFromResponse(firstResponse);
         const channelId = firstReceipt.reference;
 
         const secondResponse = await mppx.fetch(endpoint);
-        assert.equal(secondResponse.status, 200);
-        assert.deepEqual(await secondResponse.json(), { paid: true });
+        expect(secondResponse.status).toBe(200);
+        expect(await secondResponse.json()).toEqual({ paid: true });
 
         const secondReceipt = receiptFromResponse(secondResponse);
-        assert.equal(secondReceipt.reference, channelId);
+        expect(secondReceipt.reference).toBe(channelId);
 
         const channel = await getSessionChannel(harness.store, channelId);
-        assert.ok(channel);
-        assert.equal(channel!.status, 'open');
-        assert.equal(channel!.escrowedAmount, '1000');
-        assert.equal(channel!.lastAuthorizedAmount, '10');
-        assert.equal(channel!.lastSequence, 1);
+        expect(channel).toBeTruthy();
+        expect(channel!.status).toBe('open');
+        expect(channel!.escrowedAmount).toBe('1000');
+        expect(channel!.lastAuthorizedAmount).toBe('10');
+        expect(channel!.lastSequence).toBe(1);
 
-        assert.ok(events.includes('challenge'), 'should emit challenge events');
-        assert.ok(events.includes('opening'), 'should emit opening event');
-        assert.ok(events.includes('opened'), 'should emit opened event');
-        assert.ok(events.includes('updating'), 'should emit updating event');
-        assert.ok(events.includes('updated'), 'should emit updated event');
+        expect(events).toContain('challenge');
+        expect(events).toContain('opening');
+        expect(events).toContain('opened');
+        expect(events).toContain('updating');
+        expect(events).toContain('updated');
     } finally {
         await harness.close();
     }
@@ -790,31 +782,31 @@ test('e2e: session autoTopup returns 204 management response, then resumes updat
         const endpoint = `http://localhost:${harness.port}/session`;
 
         const openResponse = await mppx.fetch(endpoint);
-        assert.equal(openResponse.status, 200);
+        expect(openResponse.status).toBe(200);
         const channelId = receiptFromResponse(openResponse).reference;
 
         const updateResponse = await mppx.fetch(endpoint);
-        assert.equal(updateResponse.status, 200);
-        assert.equal(receiptFromResponse(updateResponse).reference, channelId);
+        expect(updateResponse.status).toBe(200);
+        expect(receiptFromResponse(updateResponse).reference).toBe(channelId);
 
         const topupResponse = await mppx.fetch(endpoint);
-        assert.equal(topupResponse.status, 204);
-        assert.equal(receiptFromResponse(topupResponse).reference, channelId);
+        expect(topupResponse.status).toBe(204);
+        expect(receiptFromResponse(topupResponse).reference).toBe(channelId);
 
         const channelAfterTopup = await getSessionChannel(harness.store, channelId);
-        assert.ok(channelAfterTopup);
-        assert.equal(channelAfterTopup!.escrowedAmount, '200');
-        assert.equal(channelAfterTopup!.lastAuthorizedAmount, '70');
-        assert.equal(channelAfterTopup!.lastSequence, 1);
+        expect(channelAfterTopup).toBeTruthy();
+        expect(channelAfterTopup!.escrowedAmount).toBe('200');
+        expect(channelAfterTopup!.lastAuthorizedAmount).toBe('70');
+        expect(channelAfterTopup!.lastSequence).toBe(1);
 
         const postTopupUpdateResponse = await mppx.fetch(endpoint);
-        assert.equal(postTopupUpdateResponse.status, 200);
-        assert.equal(receiptFromResponse(postTopupUpdateResponse).reference, channelId);
+        expect(postTopupUpdateResponse.status).toBe(200);
+        expect(receiptFromResponse(postTopupUpdateResponse).reference).toBe(channelId);
 
         const channelAfterUpdate = await getSessionChannel(harness.store, channelId);
-        assert.ok(channelAfterUpdate);
-        assert.equal(channelAfterUpdate!.lastAuthorizedAmount, '140');
-        assert.equal(channelAfterUpdate!.lastSequence, 2);
+        expect(channelAfterUpdate).toBeTruthy();
+        expect(channelAfterUpdate!.lastAuthorizedAmount).toBe('140');
+        expect(channelAfterUpdate!.lastSequence).toBe(2);
     } finally {
         await harness.close();
     }
@@ -845,24 +837,24 @@ test('e2e: session can auto-close when limit is hit and autoTopup is disabled', 
         const endpoint = `http://localhost:${harness.port}/session`;
 
         const openResponse = await mppx.fetch(endpoint);
-        assert.equal(openResponse.status, 200);
+        expect(openResponse.status).toBe(200);
         const channelId = receiptFromResponse(openResponse).reference;
 
         const updateResponse = await mppx.fetch(endpoint);
-        assert.equal(updateResponse.status, 200);
-        assert.equal(receiptFromResponse(updateResponse).reference, channelId);
+        expect(updateResponse.status).toBe(200);
+        expect(receiptFromResponse(updateResponse).reference).toBe(channelId);
 
         const autoCloseResponse = await mppx.fetch(endpoint);
-        assert.equal(autoCloseResponse.status, 204);
-        assert.equal(receiptFromResponse(autoCloseResponse).reference, channelId);
+        expect(autoCloseResponse.status).toBe(204);
+        expect(receiptFromResponse(autoCloseResponse).reference).toBe(channelId);
 
         const closedChannel = await getSessionChannel(harness.store, channelId);
-        assert.ok(closedChannel);
-        assert.equal(closedChannel!.status, 'closed');
+        expect(closedChannel).toBeTruthy();
+        expect(closedChannel!.status).toBe('closed');
 
         const reopenedResponse = await mppx.fetch(endpoint);
-        assert.equal(reopenedResponse.status, 200);
-        assert.notEqual(receiptFromResponse(reopenedResponse).reference, channelId);
+        expect(reopenedResponse.status).toBe(200);
+        expect(receiptFromResponse(reopenedResponse).reference).not.toBe(channelId);
     } finally {
         await harness.close();
     }
@@ -891,32 +883,32 @@ test('e2e: session close action returns 204 and next request opens a new channel
         const endpoint = `http://localhost:${harness.port}/session`;
 
         const openResponse = await mppx.fetch(endpoint);
-        assert.equal(openResponse.status, 200);
+        expect(openResponse.status).toBe(200);
         const initialChannelId = receiptFromResponse(openResponse).reference;
 
         const updateResponse = await mppx.fetch(endpoint);
-        assert.equal(updateResponse.status, 200);
+        expect(updateResponse.status).toBe(200);
 
         const closeResponse = await mppx.fetch(endpoint, {
             context: { action: 'close' },
         });
-        assert.equal(closeResponse.status, 204);
-        assert.equal(receiptFromResponse(closeResponse).reference, initialChannelId);
+        expect(closeResponse.status).toBe(204);
+        expect(receiptFromResponse(closeResponse).reference).toBe(initialChannelId);
 
         const closedChannel = await getSessionChannel(harness.store, initialChannelId);
-        assert.ok(closedChannel);
-        assert.equal(closedChannel!.status, 'closed');
+        expect(closedChannel).toBeTruthy();
+        expect(closedChannel!.status).toBe('closed');
 
         const reopenedResponse = await mppx.fetch(endpoint);
-        assert.equal(reopenedResponse.status, 200);
+        expect(reopenedResponse.status).toBe(200);
         const reopenedReceipt = receiptFromResponse(reopenedResponse);
 
-        assert.notEqual(reopenedReceipt.reference, initialChannelId);
+        expect(reopenedReceipt.reference).not.toBe(initialChannelId);
 
         const reopenedChannel = await getSessionChannel(harness.store, reopenedReceipt.reference);
-        assert.ok(reopenedChannel);
-        assert.equal(reopenedChannel!.status, 'open');
-        assert.equal(reopenedChannel!.lastSequence, 0);
+        expect(reopenedChannel).toBeTruthy();
+        expect(reopenedChannel!.status).toBe('open');
+        expect(reopenedChannel!.lastSequence).toBe(0);
     } finally {
         await harness.close();
     }
@@ -948,7 +940,7 @@ test('e2e: session swig_session mode uses on-chain setup and enforces spend limi
             async verifyOpen(_channelId, openTx) {
                 verifiedOpenTx = openTx;
                 const tx = await getConfirmedTransaction(openTx);
-                assert.ok(tx, 'openTx should resolve to a confirmed on-chain transaction');
+                expect(tx).toBeTruthy();
             },
         },
     });
@@ -990,45 +982,38 @@ test('e2e: session swig_session mode uses on-chain setup and enforces spend limi
         const endpoint = `http://localhost:${harness.port}/session`;
 
         const openResponse = await mppx.fetch(endpoint);
-        assert.equal(openResponse.status, 200);
+        expect(openResponse.status).toBe(200);
         const channelId = receiptFromResponse(openResponse).reference;
 
         const updateResponse = await mppx.fetch(endpoint);
-        assert.equal(updateResponse.status, 200);
-        assert.equal(receiptFromResponse(updateResponse).reference, channelId);
+        expect(updateResponse.status).toBe(200);
+        expect(receiptFromResponse(updateResponse).reference).toBe(channelId);
 
-        assert.ok(verifiedOpenTx, 'transaction verifier should receive openTx signature');
+        expect(verifiedOpenTx).toBeTruthy();
 
         const delegatedSigner = swig.getCurrentSessionSigner();
-        assert.ok(delegatedSigner, 'swig session signer should be created on open');
+        expect(delegatedSigner).toBeTruthy();
 
         const channel = await getSessionChannel(harness.store, channelId);
-        assert.ok(channel);
-        assert.equal(channel!.authorizationMode, 'swig_session');
-        assert.equal(channel!.authority.wallet, clientSigner.address);
-        assert.equal(channel!.authority.delegatedSessionKey, delegatedSigner!.address);
-        assert.equal(channel!.lastAuthorizedAmount, '10');
-        assert.equal(channel!.lastSequence, 1);
+        expect(channel).toBeTruthy();
+        expect(channel!.authorizationMode).toBe('swig_session');
+        expect(channel!.authority.wallet).toBe(clientSigner.address);
+        expect(channel!.authority.delegatedSessionKey).toBe(delegatedSigner!.address);
+        expect(channel!.lastAuthorizedAmount).toBe('10');
+        expect(channel!.lastSequence).toBe(1);
 
         const recipientBalanceBefore = await getBalance(recipientSigner.address);
 
         const withinLimitSignature = await swig.spendFromSwig(500n, recipientSigner.address);
         const withinLimitTx = await getConfirmedTransaction(withinLimitSignature);
-        assert.ok(withinLimitTx, 'within-limit Swig spend should settle on-chain');
+        expect(withinLimitTx).toBeTruthy();
 
         const recipientBalanceAfter = await getBalance(recipientSigner.address);
-        assert.ok(
-            recipientBalanceAfter - recipientBalanceBefore >= 500,
-            'recipient should receive Swig spend transfer',
-        );
+        expect(recipientBalanceAfter - recipientBalanceBefore).toBeGreaterThanOrEqual(500);
 
-        await assert.rejects(
-            async () => {
-                await swig.spendFromSwig(900n, recipientSigner.address);
-            },
-            /Transaction simulation failed/,
-            'over-limit Swig spend should fail on-chain',
-        );
+        await expect(async () => {
+            await swig.spendFromSwig(900n, recipientSigner.address);
+        }).rejects.toThrow(/Transaction simulation failed/);
     } finally {
         await harness.close();
     }
@@ -1059,7 +1044,7 @@ test('e2e: session close can include on-chain settlement transaction', async () 
             async verifyClose(_channelId, closeTx) {
                 verifiedCloseTx = closeTx;
                 const tx = await getConfirmedTransaction(closeTx);
-                assert.ok(tx, 'closeTx should resolve to a confirmed on-chain transaction');
+                expect(tx).toBeTruthy();
             },
         },
     });
@@ -1103,24 +1088,21 @@ test('e2e: session close can include on-chain settlement transaction', async () 
         const endpoint = `http://localhost:${harness.port}/session`;
 
         const openResponse = await mppx.fetch(endpoint);
-        assert.equal(openResponse.status, 200);
+        expect(openResponse.status).toBe(200);
 
         const updateResponse = await mppx.fetch(endpoint);
-        assert.equal(updateResponse.status, 200);
+        expect(updateResponse.status).toBe(200);
 
         const recipientBalanceBeforeClose = await getBalance(recipientSigner.address);
 
         const closeResponse = await mppx.fetch(endpoint, {
             context: { action: 'close' },
         });
-        assert.equal(closeResponse.status, 204);
-        assert.ok(verifiedCloseTx, 'transaction verifier should receive closeTx signature');
+        expect(closeResponse.status).toBe(204);
+        expect(verifiedCloseTx).toBeTruthy();
 
         const recipientBalanceAfterClose = await getBalance(recipientSigner.address);
-        assert.ok(
-            recipientBalanceAfterClose - recipientBalanceBeforeClose >= 10,
-            'recipient should receive settlement transfer on close',
-        );
+        expect(recipientBalanceAfterClose - recipientBalanceBeforeClose).toBeGreaterThanOrEqual(10);
     } finally {
         await harness.close();
     }
@@ -1152,7 +1134,7 @@ test('e2e: session regular_budget mode enforces on-chain Swig role limits', asyn
             async verifyOpen(_channelId, openTx) {
                 verifiedOpenTx = openTx;
                 const tx = await getConfirmedTransaction(openTx);
-                assert.ok(tx, 'budget openTx should resolve to a confirmed on-chain transaction');
+                expect(tx).toBeTruthy();
             },
         },
     });
@@ -1188,28 +1170,24 @@ test('e2e: session regular_budget mode enforces on-chain Swig role limits', asyn
         const endpoint = `http://localhost:${harness.port}/session`;
 
         const openResponse = await mppx.fetch(endpoint);
-        assert.equal(openResponse.status, 200);
+        expect(openResponse.status).toBe(200);
         const channelId = receiptFromResponse(openResponse).reference;
 
-        assert.ok(verifiedOpenTx, 'budget flow should verify openTx on-chain');
+        expect(verifiedOpenTx).toBeTruthy();
 
         const firstUpdateResponse = await mppx.fetch(endpoint);
-        assert.equal(firstUpdateResponse.status, 200);
-        assert.equal(receiptFromResponse(firstUpdateResponse).reference, channelId);
+        expect(firstUpdateResponse.status).toBe(200);
+        expect(receiptFromResponse(firstUpdateResponse).reference).toBe(channelId);
 
-        await assert.rejects(
-            async () => {
-                await mppx.fetch(endpoint);
-            },
-            /maxDepositAmount \(700\)/,
-            'budget authorizer should clamp topups to Swig on-chain spend limit',
-        );
+        await expect(async () => {
+            await mppx.fetch(endpoint);
+        }).rejects.toThrow(/maxDepositAmount \(700\)/);
 
         const channel = await getSessionChannel(harness.store, channelId);
-        assert.ok(channel);
-        assert.equal(channel!.authorizationMode, 'regular_budget');
-        assert.equal(channel!.lastAuthorizedAmount, '400');
-        assert.equal(channel!.lastSequence, 1);
+        expect(channel).toBeTruthy();
+        expect(channel!.authorizationMode).toBe('regular_budget');
+        expect(channel!.lastAuthorizedAmount).toBe('400');
+        expect(channel!.lastSequence).toBe(1);
     } finally {
         await harness.close();
     }
@@ -1270,13 +1248,9 @@ test('e2e: session swig_session mode rejects delegated signer not present on-cha
             polyfill: false,
         });
 
-        await assert.rejects(
-            async () => {
-                await mppx.fetch(`http://localhost:${harness.port}/session`);
-            },
-            /delegated session key|Swig role 0 does not match delegated session key role/,
-            'swig_session should reject delegated keys that are not created on-chain',
-        );
+        await expect(async () => {
+            await mppx.fetch(`http://localhost:${harness.port}/session`);
+        }).rejects.toThrow(/delegated session key|Swig role 0 does not match delegated session key role/);
     } finally {
         await harness.close();
     }
@@ -1335,13 +1309,9 @@ test('e2e: session regular_budget mode rejects unknown configured Swig role', as
             polyfill: false,
         });
 
-        await assert.rejects(
-            async () => {
-                await mppx.fetch(`http://localhost:${harness.port}/session`);
-            },
-            /Unable to locate Swig role 999/,
-            'regular_budget should reject non-existent configured Swig roles',
-        );
+        await expect(async () => {
+            await mppx.fetch(`http://localhost:${harness.port}/session`);
+        }).rejects.toThrow(/Unable to locate Swig role 999/);
     } finally {
         await harness.close();
     }
