@@ -7,7 +7,7 @@ export default [
   ...solanaConfig,
   {
     rules: {
-      '@typescript-eslint/no-explicit-any': 'warn',
+      '@typescript-eslint/no-namespace': ['error', { allowDeclarations: true }],
     },
   },
 ];

@@ -34,8 +34,8 @@
     "demo:app": "cd demo/app && pnpm dev",
     "lint": "eslint sdk/src --ext .ts",
     "lint:fix": "eslint sdk/src --ext .ts --fix",
-    "format": "prettier --write \"sdk/src/**/*.ts\" \"examples/**/*.ts\"",
-    "format:check": "prettier --check \"sdk/src/**/*.ts\" \"examples/**/*.ts\""
+    "format": "prettier --write \"sdk/src/**/*.ts\"",
+    "format:check": "prettier --check \"sdk/src/**/*.ts\""
   },
   "prettier": "@solana/prettier-config-solana",
   "dependencies": {

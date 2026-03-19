@@ -1,192 +1,189 @@
-export type AuthorizationMode =
-  | 'swig_session'
-  | 'regular_budget'
-  | 'regular_unbounded'
+export type AuthorizationMode = 'regular_budget' | 'regular_unbounded' | 'swig_session';
 
 export interface SessionVoucher {
-  channelId: string
-  payer: string
-  recipient: string
-  cumulativeAmount: string
-  sequence: number
-  meter: string
-  units: string
-  expiresAt?: string
-  serverNonce: string
-  chainId: string
-  channelProgram: string
+    chainId: string;
+    channelId: string;
+    channelProgram: string;
+    cumulativeAmount: string;
+    expiresAt?: string;
+    meter: string;
+    payer: string;
+    recipient: string;
+    sequence: number;
+    serverNonce: string;
+    units: string;
 }
 
 export interface SignedSessionVoucher {
-  voucher: SessionVoucher
-  signer: string
-  signature: string
-  signatureType: 'ed25519' | 'swig-session'
+    signature: string;
+    signatureType: 'ed25519' | 'swig-session';
+    signer: string;
+    voucher: SessionVoucher;
 }
 
 export interface ChannelState {
-  channelId: string
-  payer: string
-  recipient: string
-  asset: { kind: 'sol' | 'spl'; mint?: string; decimals: number }
-  escrowedAmount: string
-  settledAmount: string
-  lastAuthorizedAmount: string
-  openSlot: number
-  expiresAtUnix: number | null
-  status: 'open' | 'closing' | 'closed' | 'expired'
-  authorizationMode: AuthorizationMode
-  authority: {
-    wallet: string
-    delegatedSessionKey?: string
-    swigRoleId?: number
-  }
-  serverNonce: string
-  lastSequence: number
-  createdAt: string
+    asset: { decimals: number; kind: 'sol' | 'spl'; mint?: string };
+    authority: {
+        delegatedSessionKey?: string;
+        swigRoleId?: number;
+        wallet: string;
+    };
+    authorizationMode: AuthorizationMode;
+    channelId: string;
+    createdAt: string;
+    escrowedAmount: string;
+    expiresAtUnix: number | null;
+    lastAuthorizedAmount: string;
+    lastSequence: number;
+    openSlot: number;
+    payer: string;
+    recipient: string;
+    serverNonce: string;
+    settledAmount: string;
+    status: 'closed' | 'closing' | 'expired' | 'open';
 }
 
 export type SessionCredentialPayload =
-  | {
-      action: 'open'
-      channelId: string
-      payer: string
-      authorizationMode: AuthorizationMode
-      depositAmount: string
-      openTx: string
-      expiresAt?: string
-      capabilities?: {
-        maxCumulativeAmount?: string
-        allowedActions?: string[]
+    | {
+          action: 'close';
+          channelId: string;
+          closeTx?: string;
+          voucher: SignedSessionVoucher;
       }
-      voucher: SignedSessionVoucher
-    }
-  | {
-      action: 'update'
-      channelId: string
-      voucher: SignedSessionVoucher
-    }
-  | {
-      action: 'topup'
-      channelId: string
-      additionalAmount: string
-      topupTx: string
-    }
-  | {
-      action: 'close'
-      channelId: string
-      closeTx?: string
-      voucher: SignedSessionVoucher
-    }
+    | {
+          action: 'open';
+          authorizationMode: AuthorizationMode;
+          capabilities?: {
+              allowedActions?: string[];
+              maxCumulativeAmount?: string;
+          };
+          channelId: string;
+          depositAmount: string;
+          expiresAt?: string;
+          openTx: string;
+          payer: string;
+          voucher: SignedSessionVoucher;
+      }
+    | {
+          action: 'topup';
+          additionalAmount: string;
+          channelId: string;
+          topupTx: string;
+      }
+    | {
+          action: 'update';
+          channelId: string;
+          voucher: SignedSessionVoucher;
+      };
 
 export interface VoucherVerifier {
-  verify(voucher: SignedSessionVoucher, channel: ChannelState): Promise<boolean>
+    verify(voucher: SignedSessionVoucher, channel: ChannelState): Promise<boolean>;
 }
 
 export interface SessionAuthorizer {
-  getMode(): AuthorizationMode
-  authorizeOpen(input: AuthorizeOpenInput): Promise<AuthorizedOpen>
-  authorizeUpdate(input: AuthorizeUpdateInput): Promise<AuthorizedUpdate>
-  authorizeTopup(input: AuthorizeTopupInput): Promise<AuthorizedTopup>
-  authorizeClose(input: AuthorizeCloseInput): Promise<AuthorizedClose>
-  getCapabilities(): AuthorizerCapabilities
+    authorizeClose(input: AuthorizeCloseInput): Promise<AuthorizedClose>;
+    authorizeOpen(input: AuthorizeOpenInput): Promise<AuthorizedOpen>;
+    authorizeTopup(input: AuthorizeTopupInput): Promise<AuthorizedTopup>;
+    authorizeUpdate(input: AuthorizeUpdateInput): Promise<AuthorizedUpdate>;
+    getCapabilities(): AuthorizerCapabilities;
+    getMode(): AuthorizationMode;
 }
 
 export interface AuthorizeOpenInput {
-  channelId: string
-  recipient: string
-  asset: { kind: 'sol' | 'spl'; mint?: string; decimals: number }
-  depositAmount: string
-  channelProgram: string
-  network: string
-  serverNonce: string
-  pricing?: { unit: string; amountPerUnit: string; meter: string }
+    asset: { decimals: number; kind: 'sol' | 'spl'; mint?: string };
+    channelId: string;
+    channelProgram: string;
+    depositAmount: string;
+    network: string;
+    pricing?: { amountPerUnit: string; meter: string; unit: string };
+    recipient: string;
+    serverNonce: string;
 }
 
 export interface AuthorizedOpen {
-  openTx: string
-  voucher: SignedSessionVoucher
-  capabilities: AuthorizerCapabilities
-  expiresAt?: string
+    capabilities: AuthorizerCapabilities;
+    expiresAt?: string;
+    openTx: string;
+    voucher: SignedSessionVoucher;
 }
 
 export interface AuthorizeUpdateInput {
-  channelId: string
-  cumulativeAmount: string
-  sequence: number
-  meter: string
-  units: string
-  serverNonce: string
-  channelProgram: string
-  recipient: string
-  network: string
+    channelId: string;
+    channelProgram: string;
+    cumulativeAmount: string;
+    meter: string;
+    network: string;
+    recipient: string;
+    sequence: number;
+    serverNonce: string;
+    units: string;
 }
 
 export interface AuthorizedUpdate {
-  voucher: SignedSessionVoucher
+    voucher: SignedSessionVoucher;
 }
 
 export interface AuthorizeTopupInput {
-  channelId: string
-  additionalAmount: string
-  channelProgram: string
-  network: string
+    additionalAmount: string;
+    channelId: string;
+    channelProgram: string;
+    network: string;
 }
 
 export interface AuthorizedTopup {
-  topupTx: string
+    topupTx: string;
 }
 
 export interface AuthorizeCloseInput {
-  channelId: string
-  finalCumulativeAmount: string
-  sequence: number
-  serverNonce: string
-  channelProgram: string
-  recipient: string
-  network: string
+    channelId: string;
+    channelProgram: string;
+    finalCumulativeAmount: string;
+    network: string;
+    recipient: string;
+    sequence: number;
+    serverNonce: string;
 }
 
 export interface AuthorizedClose {
-  voucher: SignedSessionVoucher
-  closeTx?: string
+    closeTx?: string;
+    voucher: SignedSessionVoucher;
 }
 
 export interface AuthorizerCapabilities {
-  mode: AuthorizationMode
-  expiresAt?: string
-  maxCumulativeAmount?: string
-  maxDepositAmount?: string
-  allowedPrograms?: string[]
-  allowedActions?: Array<'open' | 'update' | 'topup' | 'close'>
-  requiresInteractiveApproval: {
-    open: boolean
-    update: boolean
-    topup: boolean
-    close: boolean
-  }
+    allowedActions?: Array<'close' | 'open' | 'topup' | 'update'>;
+    allowedPrograms?: string[];
+    expiresAt?: string;
+    maxCumulativeAmount?: string;
+    maxDepositAmount?: string;
+    mode: AuthorizationMode;
+    requiresInteractiveApproval: {
+        close: boolean;
+        open: boolean;
+        topup: boolean;
+        update: boolean;
+    };
 }
 
 export type SessionPolicyProfile =
-  | {
-      profile: 'swig-time-bound'
-      ttlSeconds: number
-      spendLimit?: string
-      depositLimit?: string
-      autoTopup?: {
-        enabled: boolean
-        triggerBelow: string
-        amount: string
+    | {
+          autoTopup?: {
+              amount: string;
+              enabled: boolean;
+              triggerBelow: string;
+          };
+          depositLimit?: string;
+          profile: 'swig-time-bound';
+          spendLimit?: string;
+          ttlSeconds: number;
       }
-    }
-  | {
-      profile: 'wallet-budget'
-      maxCumulativeAmount: string
-      maxDepositAmount?: string
-      validUntil?: string
-      requireApprovalOnTopup?: boolean
-    }
-  | {
-      profile: 'wallet-manual'
-      requireApprovalOnEveryUpdate: boolean
-    }
+    | {
+          maxCumulativeAmount: string;
+          maxDepositAmount?: string;
+          profile: 'wallet-budget';
+          requireApprovalOnTopup?: boolean;
+          validUntil?: string;
+      }
+    | {
+          profile: 'wallet-manual';
+          requireApprovalOnEveryUpdate: boolean;
+      };

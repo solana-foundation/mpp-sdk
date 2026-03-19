@@ -1,35 +1,35 @@
 // Shared types and method definition
-export { charge } from './Methods.js'
-export { session } from './Methods.js'
+export { charge } from './Methods.js';
+export { session } from './Methods.js';
 
 // Session types and authorizer utilities
 export type {
-  AuthorizationMode,
-  SessionVoucher,
-  SignedSessionVoucher,
-  ChannelState,
-  SessionCredentialPayload,
-  VoucherVerifier,
-  SessionAuthorizer,
-  AuthorizeOpenInput,
-  AuthorizedOpen,
-  AuthorizeUpdateInput,
-  AuthorizedUpdate,
-  AuthorizeTopupInput,
-  AuthorizedTopup,
-  AuthorizeCloseInput,
-  AuthorizedClose,
-  AuthorizerCapabilities,
-  SessionPolicyProfile,
-} from './session/Types.js'
+    AuthorizationMode,
+    SessionVoucher,
+    SignedSessionVoucher,
+    ChannelState,
+    SessionCredentialPayload,
+    VoucherVerifier,
+    SessionAuthorizer,
+    AuthorizeOpenInput,
+    AuthorizedOpen,
+    AuthorizeUpdateInput,
+    AuthorizedUpdate,
+    AuthorizeTopupInput,
+    AuthorizedTopup,
+    AuthorizeCloseInput,
+    AuthorizedClose,
+    AuthorizerCapabilities,
+    SessionPolicyProfile,
+} from './session/Types.js';
 
 export {
-  BudgetAuthorizer,
-  SwigSessionAuthorizer,
-  UnboundedAuthorizer,
-  makeSessionAuthorizer,
-} from './session/authorizers/index.js'
+    BudgetAuthorizer,
+    SwigSessionAuthorizer,
+    UnboundedAuthorizer,
+    makeSessionAuthorizer,
+} from './session/authorizers/index.js';
 
 // Convenience re-exports — for full usage, import from solana-mpp-sdk/server or solana-mpp-sdk/client
-export * as server from './server/index.js'
-export * as client from './client/index.js'
+export * as server from './server/index.js';
+export * as client from './client/index.js';

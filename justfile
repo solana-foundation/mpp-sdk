@@ -22,3 +22,6 @@ test-integration:
 
 # All tests
 test-all: test test-integration
+
+# Pre-commit: fmt + typecheck + unit tests
+pre-commit: fmt build test

@@ -1,5 +1,5 @@
-import { charge as charge_ } from './Charge.js'
-import { session as session_ } from './Session.js'
+import { charge as charge_ } from './Charge.js';
+import { session as session_ } from './Session.js';
 
 /**
  * Creates a Solana `charge` method for usage on the client.
@@ -17,14 +17,15 @@ import { session as session_ } from './Session.js'
  * const response = await mppx.fetch('https://api.example.com/paid-content')
  * ```
  */
-export function solana(parameters: solana.Parameters): ReturnType<typeof charge_> {
-  return charge_(parameters)
-}
+export const solana: {
+    (parameters: solana.Parameters): ReturnType<typeof charge_>;
+    charge: typeof charge_;
+    session: typeof session_;
+} = Object.assign((parameters: solana.Parameters) => charge_(parameters), {
+    charge: charge_,
+    session: session_,
+});
 
-export namespace solana {
-  export type Parameters = charge_.Parameters
-
-  /** Creates a Solana `charge` method for one-shot on-chain payments. */
-  export const charge = charge_
-  export const session = session_
+export declare namespace solana {
+    type Parameters = charge_.Parameters;
 }
