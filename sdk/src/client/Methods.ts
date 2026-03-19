@@ -1,4 +1,5 @@
 import { charge as charge_ } from './Charge.js'
+import { session as session_ } from './Session.js'
 
 /**
  * Creates a Solana `charge` method for usage on the client.
@@ -25,4 +26,5 @@ export namespace solana {
 
   /** Creates a Solana `charge` method for one-shot on-chain payments. */
   export const charge = charge_
+  export const session = session_
 }
