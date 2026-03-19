@@ -35,6 +35,9 @@ import {
   DEFAULT_RPC_URLS,
 } from '../constants.js'
 
+const MEMO_PROGRAM = 'MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr'
+const textEncoder = new TextEncoder()
+
 /**
  * Creates a Solana `charge` method for usage on the client.
  *
@@ -74,6 +77,7 @@ export function charge(parameters: charge.Parameters) {
         network,
         splToken,
         decimals,
+        reference,
         tokenProgram: tokenProgramAddr,
         feePayer: serverPaysFees,
         feePayerKey,
@@ -163,6 +167,10 @@ export function charge(parameters: charge.Parameters) {
             amount: BigInt(amount),
           }),
         )
+      }
+
+      if (reference?.trim()) {
+        instructions.push(createReferenceMemoInstruction(reference))
       }
 
       onProgress?.({ type: 'signing' })
@@ -260,6 +268,18 @@ function createAssociatedTokenAccountIdempotent(
       { address: tokenProgram, role: AccountRole.READONLY },
     ],
     data: new Uint8Array([1]), // CreateIdempotent discriminator
+  }
+}
+
+/**
+ * Adds challenge reference as memo to make rapid identical payments unique
+ * per challenge (important for local simnets such as Surfpool).
+ */
+function createReferenceMemoInstruction(reference: string): Instruction {
+  return {
+    programAddress: address(MEMO_PROGRAM),
+    accounts: [],
+    data: textEncoder.encode(`mppx:${reference}`),
   }
 }
 

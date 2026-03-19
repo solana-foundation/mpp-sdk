@@ -18,7 +18,8 @@
     }
   },
   "scripts": {
-    "test": "node --import tsx/esm --test sdk/src/__tests__/charge.test.ts",
+    "test": "node --import tsx/esm --test sdk/src/__tests__/charge.test.ts sdk/src/__tests__/session.test.ts",
+    "test:session": "node --import tsx/esm --test sdk/src/__tests__/session.test.ts",
     "test:integration": "node --import tsx/esm --test sdk/src/__tests__/integration.test.ts",
     "test:all": "npm test && npm run test:integration",
     "typecheck": "tsc --noEmit",
@@ -35,10 +36,18 @@
   },
   "peerDependencies": {
     "@solana/kit": ">=6.1.0",
+    "@swig-wallet/kit": ">=1.7.0",
     "mppx": ">=0.3.15"
+  },
+  "peerDependenciesMeta": {
+    "@swig-wallet/kit": {
+      "optional": true
+    }
   },
   "devDependencies": {
     "@solana/kit": "^6.4.0",
+    "@swig-wallet/kit": "^1.7.1",
+    "@swig-wallet/lib": "^1.7.1",
     "@types/node": "^25.5.0",
     "mppx": "^0.3.15",
     "tsx": "^4.19.0",
