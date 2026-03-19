@@ -6,29 +6,46 @@ on:
   pull_request:
 
 jobs:
+  # TODO: enable after lint/format cleanup PR
+  # lint:
+  #   name: Lint & Format
+  #   runs-on: ubuntu-latest
+  #   steps:
+  #     - uses: actions/checkout@v4
+  #     - uses: pnpm/action-setup@v4
+  #     - uses: actions/setup-node@v4
+  #       with:
+  #         node-version: 22
+  #         cache: pnpm
+  #     - run: pnpm install --frozen-lockfile
+  #     - run: pnpm lint
+  #     - run: pnpm format:check
+
   typecheck:
     name: Typecheck
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-          cache: npm
-      - run: npm ci
-      - run: npm run typecheck
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm typecheck
 
   test:
     name: Unit tests
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-          cache: npm
-      - run: npm ci
-      - run: npm test
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm test
 
   integration:
     name: Integration tests
@@ -41,11 +58,12 @@ jobs:
           - 8900:8900
     steps:
       - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-          cache: npm
-      - run: npm ci
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
       - name: Wait for Surfpool
         run: |
           for i in $(seq 1 30); do
@@ -55,4 +73,4 @@ jobs:
               && break
             sleep 1
           done
-      - run: npm run test:integration
+      - run: pnpm test:integration

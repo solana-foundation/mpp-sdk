@@ -3,6 +3,10 @@
   "version": "0.1.0",
   "description": "Solana payment method for the MPP protocol",
   "type": "module",
+  "packageManager": "pnpm@10.14.0",
+  "engines": {
+    "node": ">=18"
+  },
   "exports": {
     ".": {
       "types": "./sdk/src/index.ts",
@@ -21,14 +25,19 @@
     "test": "node --import tsx/esm --test sdk/src/__tests__/charge.test.ts sdk/src/__tests__/session.test.ts sdk/src/__tests__/transactions.test.ts",
     "test:session": "node --import tsx/esm --test sdk/src/__tests__/session.test.ts",
     "test:integration": "node --import tsx/esm --test sdk/src/__tests__/integration.test.ts",
-    "test:all": "npm test && npm run test:integration",
+    "test:all": "pnpm test && pnpm test:integration",
     "typecheck": "tsc --noEmit",
     "example:server": "npx tsx examples/server.ts",
     "example:client": "npx tsx examples/client.ts",
-    "demo:install": "cd demo/server && npm install && cd ../app && npm install",
-    "demo:server": "cd demo/server && npm run dev",
-    "demo:app": "cd demo/app && npm run dev"
+    "demo:install": "cd demo/server && pnpm install && cd ../app && pnpm install",
+    "demo:server": "cd demo/server && pnpm dev",
+    "demo:app": "cd demo/app && pnpm dev",
+    "lint": "eslint sdk/src --ext .ts",
+    "lint:fix": "eslint sdk/src --ext .ts --fix",
+    "format": "prettier --write \"sdk/src/**/*.ts\" \"examples/**/*.ts\"",
+    "format:check": "prettier --check \"sdk/src/**/*.ts\" \"examples/**/*.ts\""
   },
+  "prettier": "@solana/prettier-config-solana",
   "dependencies": {
     "@solana-program/compute-budget": "^0.15.0",
     "@solana-program/system": "^0.11.0",
@@ -45,11 +54,17 @@
     }
   },
   "devDependencies": {
+    "@solana/eslint-config-solana": "^6.0.0",
     "@solana/kit": "^6.4.0",
+    "@solana/prettier-config-solana": "^0.0.6",
     "@swig-wallet/kit": "^1.7.1",
     "@swig-wallet/lib": "^1.7.1",
     "@types/node": "^25.5.0",
+    "@typescript-eslint/eslint-plugin": "^8.57.1",
+    "@typescript-eslint/parser": "^8.57.1",
+    "eslint": "^9.39.4",
     "mppx": "^0.3.15",
+    "prettier": "^3.8.1",
     "tsx": "^4.19.0",
     "typescript": "^5.7.0"
   }

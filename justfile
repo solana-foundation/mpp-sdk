@@ -1,0 +1,24 @@
+set shell := ["bash", "-uc"]
+
+default:
+    @just --list
+
+# Format and lint
+fmt:
+    pnpm lint:fix
+    pnpm format
+
+# Typecheck
+build:
+    pnpm typecheck
+
+# Unit tests
+test:
+    pnpm test
+
+# Integration tests (requires Surfpool)
+test-integration:
+    pnpm test:integration
+
+# All tests
+test-all: test test-integration
