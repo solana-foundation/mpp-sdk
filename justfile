@@ -8,8 +8,12 @@ fmt:
     pnpm lint:fix
     pnpm format
 
-# Typecheck
+# Build
 build:
+    pnpm build
+
+# Typecheck
+typecheck:
     pnpm typecheck
 
 # Unit tests
@@ -24,4 +28,4 @@ test-integration:
 test-all: test test-integration
 
 # Pre-commit: fmt + typecheck + unit tests
-pre-commit: fmt build test
+pre-commit: fmt typecheck test

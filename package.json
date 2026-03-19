@@ -1,6 +1,6 @@
 {
-  "name": "solana-mpp-sdk",
-  "version": "0.1.0",
+  "name": "@solana/mpp",
+  "version": "0.1.0-beta.0",
   "description": "Solana payment method for the MPP protocol",
   "type": "module",
   "packageManager": "pnpm@10.14.0",
@@ -9,23 +9,28 @@
   },
   "exports": {
     ".": {
-      "types": "./sdk/src/index.ts",
-      "default": "./sdk/src/index.ts"
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
     },
     "./server": {
-      "types": "./sdk/src/server/index.ts",
-      "default": "./sdk/src/server/index.ts"
+      "types": "./dist/server/index.d.ts",
+      "default": "./dist/server/index.js"
     },
     "./client": {
-      "types": "./sdk/src/client/index.ts",
-      "default": "./sdk/src/client/index.ts"
+      "types": "./dist/client/index.d.ts",
+      "default": "./dist/client/index.js"
     }
   },
+  "files": [
+    "dist",
+    "sdk/src/[!_]*"
+  ],
   "scripts": {
     "test": "node --import tsx/esm --test sdk/src/__tests__/charge.test.ts sdk/src/__tests__/session.test.ts sdk/src/__tests__/transactions.test.ts",
     "test:session": "node --import tsx/esm --test sdk/src/__tests__/session.test.ts",
     "test:integration": "node --import tsx/esm --test sdk/src/__tests__/integration.test.ts",
     "test:all": "pnpm test && pnpm test:integration",
+    "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc --noEmit",
     "example:server": "npx tsx examples/server.ts",
     "example:client": "npx tsx examples/client.ts",
