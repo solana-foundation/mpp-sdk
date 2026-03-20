@@ -6,6 +6,10 @@ on:
   pull_request:
   workflow_call:
 
+defaults:
+  run:
+    working-directory: typescript
+
 jobs:
   audit:
     name: Audit
@@ -17,6 +21,7 @@ jobs:
         with:
           node-version: 22
           cache: pnpm
+          cache-dependency-path: typescript/pnpm-lock.yaml
       - run: pnpm install --frozen-lockfile
       - run: pnpm audit --production
 
@@ -30,6 +35,7 @@ jobs:
         with:
           node-version: 22
           cache: pnpm
+          cache-dependency-path: typescript/pnpm-lock.yaml
       - run: pnpm install --frozen-lockfile
       - run: pnpm lint
       - run: pnpm format:check
@@ -44,6 +50,7 @@ jobs:
         with:
           node-version: 22
           cache: pnpm
+          cache-dependency-path: typescript/pnpm-lock.yaml
       - run: pnpm install --frozen-lockfile
       - run: pnpm typecheck
 
@@ -57,6 +64,7 @@ jobs:
         with:
           node-version: 22
           cache: pnpm
+          cache-dependency-path: typescript/pnpm-lock.yaml
       - run: pnpm install --frozen-lockfile
       - run: pnpm test
 
@@ -76,8 +84,10 @@ jobs:
         with:
           node-version: 22
           cache: pnpm
+          cache-dependency-path: typescript/pnpm-lock.yaml
       - run: pnpm install --frozen-lockfile
       - name: Wait for Surfpool
+        working-directory: .
         run: |
           for i in $(seq 1 30); do
             curl -s -X POST http://localhost:8899 \

@@ -1,0 +1,29 @@
+{
+  "private": true,
+  "packageManager": "pnpm@10.14.0",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "build": "pnpm -r build",
+    "test": "vitest run",
+    "test:integration": "vitest run --config vitest.config.integration.ts",
+    "test:all": "pnpm test && pnpm test:integration",
+    "typecheck": "pnpm -r typecheck",
+    "lint": "eslint packages/*/src --ext .ts",
+    "lint:fix": "eslint packages/*/src --ext .ts --fix",
+    "format": "prettier --write \"packages/*/src/**/*.ts\"",
+    "format:check": "prettier --check \"packages/*/src/**/*.ts\""
+  },
+  "prettier": "@solana/prettier-config-solana",
+  "devDependencies": {
+    "@solana/eslint-config-solana": "^6.0.0",
+    "@solana/prettier-config-solana": "^0.0.6",
+    "@typescript-eslint/eslint-plugin": "^8.57.1",
+    "@typescript-eslint/parser": "^8.57.1",
+    "eslint": "^9.39.4",
+    "prettier": "^3.8.1",
+    "typescript": "^5.7.0",
+    "vitest": "^4.1.0"
+  }
+}

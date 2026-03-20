@@ -66,12 +66,12 @@ jobs:
             ${{ runner.os }}-pnpm-store-
 
       - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+        run: cd typescript && pnpm install --frozen-lockfile
 
       - name: Get version
         id: version
         run: |
-          VERSION=$(node -p "require('./package.json').version")
+          VERSION=$(node -p "require('./typescript/packages/mpp/package.json').version")
           echo "version=$VERSION" >> $GITHUB_OUTPUT
           echo "Publishing version: $VERSION"
 
@@ -88,12 +88,12 @@ jobs:
           fi
 
       - name: Build
-        run: pnpm build
+        run: cd typescript && pnpm build
 
       - name: Pack tarball
         run: |
           mkdir -p .npm-pack
-          pnpm pack --pack-destination .npm-pack
+          cd typescript/packages/mpp && pnpm pack --pack-destination ../../../.npm-pack
           echo ""
           echo "Packed tarball:"
           ls -la .npm-pack/

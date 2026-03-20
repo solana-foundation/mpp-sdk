@@ -6,11 +6,8 @@
     "strict": true,
     "esModuleInterop": true,
     "skipLibCheck": true,
-    "types": ["node", "vitest/globals"],
-    "outDir": "dist",
     "declaration": true,
     "declarationMap": true,
     "sourceMap": true
-  },
-  "include": ["sdk/src", "examples"]
+  }
 }

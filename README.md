@@ -47,23 +47,25 @@ pnpm add @swig-wallet/kit
 ## Architecture
 
 ```
-sdk/src/
-├── Methods.ts              # Shared charge + session schemas
-├── constants.ts            # Token programs, USDC mints, RPC URLs
-├── server/
-│   ├── Charge.ts           # Server: challenge, verify, broadcast
-│   └── Session.ts          # Server: session channel management
-├── client/
-│   ├── Charge.ts           # Client: build tx, sign, send
-│   └── Session.ts          # Client: session lifecycle
-└── session/
-    ├── Types.ts            # Session types and interfaces
-    ├── Voucher.ts          # Voucher signing and verification
-    ├── ChannelStore.ts     # Persistent channel state
-    └── authorizers/        # Pluggable authorization strategies
-        ├── UnboundedAuthorizer.ts
-        ├── BudgetAuthorizer.ts
-        └── SwigSessionAuthorizer.ts
+mpp-sdk/
+├── typescript/                    # TypeScript SDK
+│   └── packages/mpp/src/
+│       ├── Methods.ts             # Shared charge + session schemas
+│       ├── constants.ts           # Token programs, USDC mints, RPC URLs
+│       ├── server/
+│       │   ├── Charge.ts          # Server: challenge, verify, broadcast
+│       │   └── Session.ts         # Server: session channel management
+│       ├── client/
+│       │   ├── Charge.ts          # Client: build tx, sign, send
+│       │   └── Session.ts         # Client: session lifecycle
+│       └── session/
+│           ├── Types.ts           # Session types and interfaces
+│           ├── Voucher.ts         # Voucher signing and verification
+│           ├── ChannelStore.ts    # Persistent channel state
+│           └── authorizers/       # Pluggable authorization strategies
+├── rust/                          # Rust SDK (coming soon)
+│   └── src/lib.rs
+└── demo/                          # Interactive playground
 ```
 
 **Exports:**
@@ -204,14 +206,20 @@ See [demo/README.md](demo/README.md) for full details.
 ## Development
 
 ```bash
-pnpm install
+# TypeScript
+cd typescript && pnpm install
 
-just fmt              # Format and lint
-just build            # Typecheck
-just test             # Unit tests (charge + session, no network)
-just test-integration # Integration tests (requires Surfpool)
-just test-all         # All tests
-just pre-commit       # fmt + typecheck + unit tests
+just ts-fmt              # Format and lint
+just ts-build            # Build
+just ts-test             # Unit tests (charge + session, no network)
+just ts-test-integration # Integration tests (requires Surfpool)
+# Rust
+cd rust && cargo build
+
+# Everything
+just build            # Build both
+just test             # Test both
+just pre-commit       # Full pre-commit checks
 ```
 
 ## Spec
