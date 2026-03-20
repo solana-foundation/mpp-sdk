@@ -1,5 +1,6 @@
 {
   "private": true,
+  "packageManager": "pnpm@10.14.0",
   "scripts": {
     "demo:install": "cd demo/server && pnpm install && cd ../app && pnpm install",
     "demo:server": "cd demo/server && pnpm dev",
