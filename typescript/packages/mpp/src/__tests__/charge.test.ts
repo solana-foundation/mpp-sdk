@@ -26,7 +26,6 @@ function signatureCredential(
         amount?: string;
         currency?: string;
         recipient?: string;
-        reference?: string;
         decimals?: number;
         tokenProgram?: string;
         splits?: Array<{ recipient: string; amount: string; memo?: string }>;
@@ -42,7 +41,6 @@ function signatureCredential(
                 currency: curr,
                 recipient: overrides.recipient ?? RECIPIENT,
                 methodDetails: {
-                    reference: overrides.reference ?? 'ref-1',
                     network: 'devnet',
                     ...(isSpl
                         ? {
@@ -64,7 +62,6 @@ function transactionCredential(
         amount?: string;
         currency?: string;
         recipient?: string;
-        reference?: string;
         decimals?: number;
         tokenProgram?: string;
     } = {},
@@ -79,7 +76,6 @@ function transactionCredential(
                 currency: curr,
                 recipient: overrides.recipient ?? RECIPIENT,
                 methodDetails: {
-                    reference: overrides.reference ?? 'ref-1',
                     network: 'devnet',
                     ...(isSpl
                         ? {
@@ -189,7 +185,7 @@ test('charge() does not throw for native SOL', () => {
 
 // ── Request generation ──
 
-test('request() generates a unique reference and populates fields', async () => {
+test('request() populates fields without a request-side reference', async () => {
     // Mock fetch for the blockhash pre-fetch in request().
     globalThis.fetch = async () =>
         rpcSuccess({ value: { blockhash: 'MockBlockhash1111111111111111111111111111111', lastValidBlockHeight: 100 } });
@@ -202,26 +198,18 @@ test('request() generates a unique reference and populates fields', async () => 
         store,
     });
 
-    const stub = { reference: '' };
+    const stub = {};
 
     const request1 = await method.request!({
         credential: null,
         request: { amount: '1000000', currency: USDC_MINT, recipient: '', methodDetails: stub },
     });
 
-    const request2 = await method.request!({
-        credential: null,
-        request: { amount: '500000', currency: USDC_MINT, recipient: '', methodDetails: stub },
-    });
-
     expect(request1.recipient).toBe(RECIPIENT);
     expect(request1.methodDetails.network).toBe('devnet');
-    // currency is now top-level, not in methodDetails;
     expect(request1.methodDetails.decimals).toBe(6);
-    expect(request1.methodDetails.reference).toBeTruthy();
     expect(request1.methodDetails.recentBlockhash).toBeTruthy();
-    // Each call generates a fresh reference
-    expect(request1.methodDetails.reference).not.toBe(request2.methodDetails.reference);
+    expect(request1.methodDetails).not.toHaveProperty('reference');
 });
 
 test('request() returns the challenge request when credential is present', async () => {
@@ -236,17 +224,16 @@ test('request() returns the challenge request when credential is present', async
         currency: 'sol',
         recipient: RECIPIENT,
         methodDetails: {
-            reference: 'existing-ref',
             network: 'devnet',
         },
     };
 
     const result = await method.request!({
         credential: { challenge: { request: challengeRequest } } as any,
-        request: { amount: '1000000', currency: 'sol', recipient: '', methodDetails: { reference: '' } },
+        request: { amount: '1000000', currency: 'sol', recipient: '', methodDetails: {} },
     });
 
-    expect(result.methodDetails.reference).toBe('existing-ref');
+    expect(result).toEqual(challengeRequest);
 });
 
 // ══════════════════════════════════════════════════════════════════════
@@ -708,7 +695,6 @@ test('transaction: throws when transaction data is missing', async () => {
                         currency: 'sol',
                         recipient: RECIPIENT,
                         methodDetails: {
-                            reference: 'ref-1',
                             network: 'devnet',
                         },
                     },
@@ -744,7 +730,7 @@ test('splits: request() includes splits in challenge', async () => {
 
     const request = await method.request!({
         credential: null,
-        request: { amount: '1050000', currency: 'sol', recipient: '', methodDetails: { reference: '' } },
+        request: { amount: '1050000', currency: 'sol', recipient: '', methodDetails: {} },
     });
 
     expect(request.methodDetails.splits).toBeTruthy();

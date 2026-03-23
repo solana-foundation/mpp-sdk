@@ -27,11 +27,8 @@ import {
 } from '@solana-program/token';
 import { Credential, Method } from 'mppx';
 
-import { ASSOCIATED_TOKEN_PROGRAM, DEFAULT_RPC_URLS, TOKEN_PROGRAM } from '../constants.js';
+import { ASSOCIATED_TOKEN_PROGRAM, DEFAULT_RPC_URLS, TOKEN_2022_PROGRAM, TOKEN_PROGRAM } from '../constants.js';
 import * as Methods from '../Methods.js';
-
-const MEMO_PROGRAM = 'MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr';
-const textEncoder = new TextEncoder();
 
 /**
  * Creates a Solana `charge` method for usage on the client.
@@ -71,7 +68,6 @@ export function charge(parameters: charge.Parameters) {
             const {
                 network,
                 decimals,
-                reference,
                 tokenProgram: tokenProgramAddr,
                 feePayer: serverPaysFees,
                 feePayerKey,
@@ -105,7 +101,9 @@ export function charge(parameters: charge.Parameters) {
             if (mint) {
                 // ── SPL token transfers ──
                 const mintAddress = address(mint);
-                const tokenProg = address(tokenProgramAddr || TOKEN_PROGRAM);
+                const tokenProg = tokenProgramAddr
+                    ? address(tokenProgramAddr)
+                    : await resolveTokenProgram(rpc, mintAddress);
                 const tokenDecimals = decimals ?? 6;
 
                 const [sourceAta] = await findAssociatedTokenPda({
@@ -188,10 +186,6 @@ export function charge(parameters: charge.Parameters) {
                         }),
                     );
                 }
-            }
-
-            if (reference?.trim()) {
-                instructions.push(createReferenceMemoInstruction(reference, signer));
             }
 
             onProgress?.({ type: 'signing' });
@@ -295,19 +289,18 @@ function createAssociatedTokenAccountIdempotent(
     };
 }
 
-/**
- * Adds challenge reference as memo to make rapid identical payments unique
- * per challenge (important for local simnets such as Surfpool).
- */
-function createReferenceMemoInstruction(reference: string, memoSigner: TransactionSigner): Instruction {
-    return {
-        accounts: [
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            { address: memoSigner.address, role: AccountRole.READONLY_SIGNER, signer: memoSigner } as any,
-        ],
-        data: textEncoder.encode(`mppx:${reference}`),
-        programAddress: address(MEMO_PROGRAM),
-    };
+async function resolveTokenProgram(rpc: ReturnType<typeof createSolanaRpc>, mint: Address): Promise<Address> {
+    const account = await rpc.getAccountInfo(mint, { encoding: 'base64' }).send();
+    const owner = account.value?.owner;
+
+    if (!owner) {
+        throw new Error('Failed to determine token program for mint: mint account not found');
+    }
+    if (owner === TOKEN_PROGRAM || owner === TOKEN_2022_PROGRAM) {
+        return address(owner);
+    }
+
+    throw new Error(`Failed to determine token program for mint: unexpected owner ${owner}`);
 }
 
 /**

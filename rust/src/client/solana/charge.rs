@@ -74,6 +74,7 @@ pub async fn build_charge_transaction(
             &mut instructions,
             &signer_pubkey,
             &recipient_pubkey,
+            rpc,
             mint_str,
             method_details,
             primary_amount,
@@ -88,17 +89,6 @@ pub async fn build_charge_transaction(
             primary_amount,
             splits,
         )?;
-    }
-
-    // Add memo with reference.
-    if !method_details.reference.is_empty() {
-        let memo_data = format!("mppx:{}", method_details.reference);
-        instructions.push(Instruction {
-            program_id: Pubkey::from_str(programs::MEMO_PROGRAM)
-                .map_err(|e| Error::Other(e.to_string()))?,
-            accounts: vec![AccountMeta::new_readonly(signer_pubkey, true)],
-            data: memo_data.into_bytes(),
-        });
     }
 
     // Build and sign.
@@ -299,6 +289,7 @@ fn build_spl_instructions(
     instructions: &mut Vec<Instruction>,
     signer_pubkey: &Pubkey,
     recipient: &Pubkey,
+    rpc: &RpcClient,
     spl: &str,
     method_details: &SolanaMethodDetails,
     primary_amount: u64,
@@ -307,13 +298,7 @@ fn build_spl_instructions(
 ) -> Result<(), Error> {
     let mint =
         Pubkey::from_str(spl).map_err(|e| Error::Other(format!("Invalid mint: {e}")))?;
-    let token_program = Pubkey::from_str(
-        method_details
-            .token_program
-            .as_deref()
-            .unwrap_or(programs::TOKEN_PROGRAM),
-    )
-    .map_err(|e| Error::Other(format!("Invalid token program: {e}")))?;
+    let token_program = resolve_token_program(rpc, &mint, method_details)?;
     let decimals = method_details.decimals.unwrap_or(6);
 
     let source_ata = get_associated_token_address(signer_pubkey, &mint, &token_program);
@@ -356,6 +341,32 @@ fn build_spl_instructions(
     }
 
     Ok(())
+}
+
+fn resolve_token_program(
+    rpc: &RpcClient,
+    mint: &Pubkey,
+    method_details: &SolanaMethodDetails,
+) -> Result<Pubkey, Error> {
+    let token_program = if let Some(token_program) = method_details.token_program.as_deref() {
+        Pubkey::from_str(token_program)
+            .map_err(|e| Error::Other(format!("Invalid token program: {e}")))?
+    } else {
+        rpc.get_account(mint)
+            .map_err(|e| Error::Rpc(format!("Failed to fetch mint account: {e}")))?
+            .owner
+    };
+
+    let token_program_str = token_program.to_string();
+    if token_program_str != programs::TOKEN_PROGRAM
+        && token_program_str != programs::TOKEN_2022_PROGRAM
+    {
+        return Err(Error::Other(format!(
+            "Unsupported token program: {token_program}"
+        )));
+    }
+
+    Ok(token_program)
 }
 
 /// Derive the Associated Token Account address (PDA).
@@ -448,10 +459,9 @@ mod tests {
             "currency": "USDC",
             "recipient": "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY",
             "methodDetails": {
-                "reference": "test-ref-123",
                 "network": "devnet",
-                "splToken": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
-                "decimals": 6
+                "decimals": 6,
+                "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
             }
         });
         let b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD
@@ -467,7 +477,7 @@ mod tests {
         assert_eq!(parsed.intent, "charge");
         assert_eq!(parsed.request.amount, "10000");
         assert_eq!(parsed.request.currency, "USDC");
-        assert_eq!(parsed.request.method_details.reference, "test-ref-123");
+        assert_eq!(parsed.request.method_details.network.as_deref(), Some("devnet"));
     }
 
     #[test]
@@ -477,7 +487,7 @@ mod tests {
             "amount": "5000",
             "currency": "SOL",
             "recipient": "So11111111111111111111111111111111111111112",
-            "methodDetails": { "reference": "ref-1", "network": "localnet" }
+            "methodDetails": { "network": "localnet" }
         });
         let b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD
             .encode(serde_json::to_vec(&request_json).unwrap());

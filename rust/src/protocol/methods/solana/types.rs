@@ -21,16 +21,12 @@ pub mod programs {
     pub const TOKEN_2022_PROGRAM: &str = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb";
     pub const ASSOCIATED_TOKEN_PROGRAM: &str = "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL";
     pub const SYSTEM_PROGRAM: &str = "11111111111111111111111111111111";
-    pub const MEMO_PROGRAM: &str = "MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr";
 }
 
 /// Solana-specific method details in the challenge request.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SolanaMethodDetails {
-    /// Unique reference ID for this charge.
-    pub reference: String,
-
     /// Solana network: mainnet-beta, devnet, or localnet.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub network: Option<String>,

@@ -43,6 +43,7 @@ pnpm add @swig-wallet/kit
 - Works with [ConnectorKit](https://www.connectorkit.dev), `@solana/kit` keypair signers, and [Solana Keychain](https://github.com/solana-foundation/solana-keychain) remote signers
 - Server pre-fetches `recentBlockhash` to save client an RPC round-trip
 - Transaction simulation before broadcast to prevent wasted fees
+- Optional `tokenProgram` hint; clients resolve the mint owner and fail closed if discovery fails
 
 ## Architecture
 
@@ -87,7 +88,7 @@ const mppx = Mppx.create({
   methods: [
     solana.charge({
       recipient: 'RecipientPubkey...',
-      splToken: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
+      currency: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
       decimals: 6,
     }),
   ],
@@ -172,7 +173,7 @@ solana.charge({
 ### Charge Flow
 
 1. Client requests a resource
-2. Server returns **402 Payment Required** with a challenge (`recipient`, `amount`, `currency`, `recentBlockhash`)
+2. Server returns **402 Payment Required** with a challenge (`recipient`, `amount`, `currency`, optional `tokenProgram`, optional `recentBlockhash`)
 3. Client builds and signs a Solana transfer transaction
 4. Server simulates, broadcasts, confirms on-chain, and verifies the transfer
 5. Server returns the resource with a `Payment-Receipt` header

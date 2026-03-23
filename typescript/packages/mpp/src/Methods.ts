@@ -46,8 +46,6 @@ export const charge = Method.from({
                 network: z.optional(z.string()),
                 /** Server-provided base58-encoded recent blockhash. Saves the client an RPC round-trip. */
                 recentBlockhash: z.optional(z.string()),
-                /** Unique reference ID for this charge (server-generated, used for tracking). */
-                reference: z.string(),
                 /** Additional payment splits (max 32). Same asset as primary payment. */
                 splits: z.optional(
                     z.array(

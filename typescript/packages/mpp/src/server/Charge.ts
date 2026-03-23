@@ -73,9 +73,7 @@ export function charge(parameters: charge.Parameters) {
     return Method.toServer(Methods.charge, {
         defaults: {
             currency: currency ?? 'sol',
-            methodDetails: {
-                reference: '',
-            },
+            methodDetails: {},
             recipient: '',
         },
 
@@ -83,8 +81,6 @@ export function charge(parameters: charge.Parameters) {
             if (credential) {
                 return credential.challenge.request as typeof request;
             }
-
-            const reference = crypto.randomUUID();
 
             // Pre-fetch a recent blockhash so the client can skip an RPC call.
             let recentBlockhash: string | undefined;
@@ -109,7 +105,6 @@ export function charge(parameters: charge.Parameters) {
                 ...request,
                 methodDetails: {
                     network,
-                    reference,
                     ...(isSplToken ? { decimals, tokenProgram } : {}),
                     ...(signer ? { feePayer: true, feePayerKey: signer.address } : {}),
                     ...(splits?.length ? { splits } : {}),
@@ -365,7 +360,6 @@ type ChallengeRequest = {
         feePayerKey?: string;
         network?: string;
         recentBlockhash?: string;
-        reference: string;
         splits?: Array<{ amount: string; memo?: string; recipient: string }>;
         tokenProgram?: string;
     };
@@ -535,7 +529,7 @@ export declare namespace charge {
          * Defaults to in-memory. Use a persistent store in production.
          */
         store?: Store.Store;
-        /** Token program address. Defaults to TOKEN_PROGRAM. Set to TOKEN_2022_PROGRAM for Token-2022 mints. */
+        /** Token program hint. If omitted, clients fetch the mint owner and fail closed on lookup errors. */
         tokenProgram?: string;
     };
 }
