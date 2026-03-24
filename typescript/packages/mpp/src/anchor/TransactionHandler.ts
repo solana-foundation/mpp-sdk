@@ -62,7 +62,7 @@ export function createSessionTransactionHandler(params: {
     }
 
     return {
-        async handleOpen(_channelId, transaction, deposit) {
+        async handleOpen(channelId, transaction, deposit) {
             const signature = await processTransaction(transaction);
 
             const tx = await fetchTransaction(rpcUrl, signature);
@@ -74,17 +74,18 @@ export function createSessionTransactionHandler(params: {
                 recipient,
                 currency,
                 BigInt(deposit),
+                channelId,
             );
 
             return signature;
         },
-        async handleTopUp(_channelId, transaction, amount) {
+        async handleTopUp(channelId, transaction, amount) {
             const signature = await processTransaction(transaction);
 
             const tx = await fetchTransaction(rpcUrl, signature);
             if (!tx) throw new Error(`TopUp transaction not found: ${signature}`);
 
-            verifyTopUpInstruction(tx.transaction.message.instructions, channelProgram, BigInt(amount));
+            verifyTopUpInstruction(tx.transaction.message.instructions, channelProgram, BigInt(amount), channelId);
 
             return signature;
         },
@@ -101,6 +102,7 @@ export function createSessionTransactionHandler(params: {
  * - The deposit encoded in instruction data matches the credential's depositAmount
  * - accounts[1] (payee) matches the server's configured recipient
  * - accounts[2] (mint) matches the server's configured currency, if it is an SPL mint address
+ * - accounts[3] (channel PDA) matches the session channelId
  *
  * Account indices come from open.rs: [payer, payee, mint, channelPda, payerTokenAccount, vault, ...].
  * Instruction data layout (Borsh): [0..8] discriminator, [8..16] salt (u64 LE), [16..24] deposit (u64 LE).
@@ -111,6 +113,7 @@ function verifyOpenInstruction(
     expectedPayee: string,
     currency: string,
     expectedDeposit: bigint,
+    expectedChannelId: string,
 ): void {
     const ix = findChannelInstruction(instructions, channelProgram);
 
@@ -145,6 +148,12 @@ function verifyOpenInstruction(
             `Open: token mint mismatch (on-chain=${accounts[2]}, expected=${currency})`,
         );
     }
+
+    if (accounts[3] !== expectedChannelId) {
+        throw new Error(
+            `Open: channel account mismatch (on-chain=${accounts[3]}, expected=${expectedChannelId})`,
+        );
+    }
 }
 
 /**
@@ -153,13 +162,16 @@ function verifyOpenInstruction(
  * Checks:
  * - The channel program instruction has the `top_up` discriminator
  * - The amount encoded in instruction data matches the credential's additionalAmount
+ * - accounts[1] (channel PDA) matches the session channelId
  *
  * Instruction data layout (Borsh): [0..8] discriminator, [8..16] amount (u64 LE).
+ * Account indices come from top_up.rs: [payer, channel, token, vault, payerTokenAccount, tokenProgram].
  */
 function verifyTopUpInstruction(
     instructions: RawInstruction[],
     channelProgram: string,
     expectedAmount: bigint,
+    expectedChannelId: string,
 ): void {
     const ix = findChannelInstruction(instructions, channelProgram);
 
@@ -179,14 +191,27 @@ function verifyTopUpInstruction(
             `TopUp: amount mismatch (on-chain=${onChainAmount}, payload=${expectedAmount})`,
         );
     }
+
+    const accounts = ix.accounts ?? [];
+
+    if (accounts[1] !== expectedChannelId) {
+        throw new Error(
+            `TopUp: channel account mismatch (on-chain=${accounts[1]}, expected=${expectedChannelId})`,
+        );
+    }
 }
 
 function findChannelInstruction(instructions: RawInstruction[], channelProgram: string): RawInstruction {
-    const ix = instructions.find(i => i.programId === channelProgram);
-    if (!ix) {
+    const matching = instructions.filter(i => i.programId === channelProgram);
+    if (matching.length === 0) {
         throw new Error(`Transaction does not invoke the expected channel program ${channelProgram}`);
     }
-    return ix;
+    if (matching.length > 1) {
+        throw new Error(
+            `Transaction contains ${matching.length} channel-program instructions; expected exactly 1`,
+        );
+    }
+    return matching[0];
 }
 
 function decodeInstructionData(data: string | undefined, label: string): Uint8Array {
