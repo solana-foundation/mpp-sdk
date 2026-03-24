@@ -990,7 +990,11 @@ test('splits: SPL verification fails when primary amount is wrong', async () => 
                             programId: TOKEN_PROGRAM,
                             parsed: {
                                 type: 'transferChecked',
-                                info: { destination: recipientAta, mint: USDC_MINT, tokenAmount: { amount: '1000000' } },
+                                info: {
+                                    destination: recipientAta,
+                                    mint: USDC_MINT,
+                                    tokenAmount: { amount: '1000000' },
+                                },
                             },
                         },
                         {
