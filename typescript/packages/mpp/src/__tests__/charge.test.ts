@@ -913,6 +913,327 @@ test('splits: SPL verification passes with valid primary + split transfers', asy
     expect(receipt.status).toBe('success');
 });
 
+test('splits: SPL verification fails when split transfer is missing', async () => {
+    const splits = [{ recipient: PLATFORM, amount: '50000' }];
+    const method = charge({
+        recipient: RECIPIENT,
+        currency: USDC_MINT,
+        decimals: 6,
+        network: 'devnet',
+        rpcUrl: 'https://mock-rpc',
+        store,
+        splits,
+    });
+
+    const [recipientAta] = await findAssociatedTokenPda({
+        mint: address(USDC_MINT),
+        owner: address(RECIPIENT),
+        tokenProgram: address(TOKEN_PROGRAM),
+    });
+
+    globalThis.fetch = async () =>
+        rpcSuccess({
+            meta: { err: null },
+            transaction: {
+                message: {
+                    instructions: [
+                        {
+                            programId: TOKEN_PROGRAM,
+                            parsed: {
+                                type: 'transferChecked',
+                                info: { destination: recipientAta, mint: USDC_MINT, tokenAmount: { amount: '950000' } },
+                            },
+                        },
+                    ],
+                },
+            },
+        });
+
+    await expect(
+        method.verify({
+            credential: signatureCredential(SIGNATURE, { amount: '1000000', currency: USDC_MINT, decimals: 6, splits }),
+            request: {} as any,
+        }),
+    ).rejects.toThrow(/No TransferChecked instruction found.*3pF8/);
+});
+
+test('splits: SPL verification fails when primary amount is wrong', async () => {
+    const splits = [{ recipient: PLATFORM, amount: '50000' }];
+    const method = charge({
+        recipient: RECIPIENT,
+        currency: USDC_MINT,
+        decimals: 6,
+        network: 'devnet',
+        rpcUrl: 'https://mock-rpc',
+        store,
+        splits,
+    });
+
+    const [recipientAta] = await findAssociatedTokenPda({
+        mint: address(USDC_MINT),
+        owner: address(RECIPIENT),
+        tokenProgram: address(TOKEN_PROGRAM),
+    });
+    const [platformAta] = await findAssociatedTokenPda({
+        mint: address(USDC_MINT),
+        owner: address(PLATFORM),
+        tokenProgram: address(TOKEN_PROGRAM),
+    });
+
+    globalThis.fetch = async () =>
+        rpcSuccess({
+            meta: { err: null },
+            transaction: {
+                message: {
+                    instructions: [
+                        {
+                            programId: TOKEN_PROGRAM,
+                            parsed: {
+                                type: 'transferChecked',
+                                info: { destination: recipientAta, mint: USDC_MINT, tokenAmount: { amount: '1000000' } },
+                            },
+                        },
+                        {
+                            programId: TOKEN_PROGRAM,
+                            parsed: {
+                                type: 'transferChecked',
+                                info: { destination: platformAta, mint: USDC_MINT, tokenAmount: { amount: '50000' } },
+                            },
+                        },
+                    ],
+                },
+            },
+        });
+
+    await expect(
+        method.verify({
+            credential: signatureCredential(SIGNATURE, { amount: '1000000', currency: USDC_MINT, decimals: 6, splits }),
+            request: {} as any,
+        }),
+    ).rejects.toThrow(/Amount mismatch.*950000/);
+});
+
+test('splits: SPL verification fails when split amount is wrong', async () => {
+    const splits = [{ recipient: PLATFORM, amount: '50000' }];
+    const method = charge({
+        recipient: RECIPIENT,
+        currency: USDC_MINT,
+        decimals: 6,
+        network: 'devnet',
+        rpcUrl: 'https://mock-rpc',
+        store,
+        splits,
+    });
+
+    const [recipientAta] = await findAssociatedTokenPda({
+        mint: address(USDC_MINT),
+        owner: address(RECIPIENT),
+        tokenProgram: address(TOKEN_PROGRAM),
+    });
+    const [platformAta] = await findAssociatedTokenPda({
+        mint: address(USDC_MINT),
+        owner: address(PLATFORM),
+        tokenProgram: address(TOKEN_PROGRAM),
+    });
+
+    globalThis.fetch = async () =>
+        rpcSuccess({
+            meta: { err: null },
+            transaction: {
+                message: {
+                    instructions: [
+                        {
+                            programId: TOKEN_PROGRAM,
+                            parsed: {
+                                type: 'transferChecked',
+                                info: { destination: recipientAta, mint: USDC_MINT, tokenAmount: { amount: '950000' } },
+                            },
+                        },
+                        {
+                            programId: TOKEN_PROGRAM,
+                            parsed: {
+                                type: 'transferChecked',
+                                info: { destination: platformAta, mint: USDC_MINT, tokenAmount: { amount: '25000' } },
+                            },
+                        },
+                    ],
+                },
+            },
+        });
+
+    await expect(
+        method.verify({
+            credential: signatureCredential(SIGNATURE, { amount: '1000000', currency: USDC_MINT, decimals: 6, splits }),
+            request: {} as any,
+        }),
+    ).rejects.toThrow(/Amount mismatch.*3pF8/);
+});
+
+test('splits: multiple splits with SPL', async () => {
+    const REFERRER = '7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU';
+    const splits = [
+        { recipient: PLATFORM, amount: '30000' },
+        { recipient: REFERRER, amount: '20000' },
+    ];
+    const method = charge({
+        recipient: RECIPIENT,
+        currency: USDC_MINT,
+        decimals: 6,
+        network: 'devnet',
+        rpcUrl: 'https://mock-rpc',
+        store,
+        splits,
+    });
+
+    const [recipientAta] = await findAssociatedTokenPda({
+        mint: address(USDC_MINT),
+        owner: address(RECIPIENT),
+        tokenProgram: address(TOKEN_PROGRAM),
+    });
+    const [platformAta] = await findAssociatedTokenPda({
+        mint: address(USDC_MINT),
+        owner: address(PLATFORM),
+        tokenProgram: address(TOKEN_PROGRAM),
+    });
+    const [referrerAta] = await findAssociatedTokenPda({
+        mint: address(USDC_MINT),
+        owner: address(REFERRER),
+        tokenProgram: address(TOKEN_PROGRAM),
+    });
+
+    globalThis.fetch = async () =>
+        rpcSuccess({
+            meta: { err: null },
+            transaction: {
+                message: {
+                    instructions: [
+                        {
+                            programId: TOKEN_PROGRAM,
+                            parsed: {
+                                type: 'transferChecked',
+                                info: { destination: recipientAta, mint: USDC_MINT, tokenAmount: { amount: '950000' } },
+                            },
+                        },
+                        {
+                            programId: TOKEN_PROGRAM,
+                            parsed: {
+                                type: 'transferChecked',
+                                info: { destination: platformAta, mint: USDC_MINT, tokenAmount: { amount: '30000' } },
+                            },
+                        },
+                        {
+                            programId: TOKEN_PROGRAM,
+                            parsed: {
+                                type: 'transferChecked',
+                                info: { destination: referrerAta, mint: USDC_MINT, tokenAmount: { amount: '20000' } },
+                            },
+                        },
+                    ],
+                },
+            },
+        });
+
+    const receipt = await method.verify({
+        credential: signatureCredential(SIGNATURE, { amount: '1000000', currency: USDC_MINT, decimals: 6, splits }),
+        request: {} as any,
+    });
+
+    expect(receipt.status).toBe('success');
+});
+
+test('splits: duplicate SOL recipients require distinct transfer instructions', async () => {
+    const splits = [
+        { recipient: PLATFORM, amount: '30000' },
+        { recipient: PLATFORM, amount: '20000' },
+    ];
+    const method = charge({ recipient: RECIPIENT, network: 'devnet', rpcUrl: 'https://mock-rpc', store, splits });
+
+    globalThis.fetch = async () =>
+        rpcSuccess({
+            meta: { err: null },
+            transaction: {
+                message: {
+                    instructions: [
+                        {
+                            program: 'system',
+                            parsed: { type: 'transfer', info: { destination: RECIPIENT, lamports: 950000 } },
+                        },
+                        {
+                            program: 'system',
+                            parsed: { type: 'transfer', info: { destination: PLATFORM, lamports: 30000 } },
+                        },
+                    ],
+                },
+            },
+        });
+
+    await expect(
+        method.verify({
+            credential: signatureCredential(SIGNATURE, { amount: '1000000', splits }),
+            request: {} as any,
+        }),
+    ).rejects.toThrow(/No system transfer instruction found.*3pF8/);
+});
+
+test('splits: duplicate SPL recipients require distinct transfer instructions', async () => {
+    const splits = [
+        { recipient: PLATFORM, amount: '30000' },
+        { recipient: PLATFORM, amount: '20000' },
+    ];
+    const method = charge({
+        recipient: RECIPIENT,
+        currency: USDC_MINT,
+        decimals: 6,
+        network: 'devnet',
+        rpcUrl: 'https://mock-rpc',
+        store,
+        splits,
+    });
+
+    const [recipientAta] = await findAssociatedTokenPda({
+        mint: address(USDC_MINT),
+        owner: address(RECIPIENT),
+        tokenProgram: address(TOKEN_PROGRAM),
+    });
+    const [platformAta] = await findAssociatedTokenPda({
+        mint: address(USDC_MINT),
+        owner: address(PLATFORM),
+        tokenProgram: address(TOKEN_PROGRAM),
+    });
+
+    globalThis.fetch = async () =>
+        rpcSuccess({
+            meta: { err: null },
+            transaction: {
+                message: {
+                    instructions: [
+                        {
+                            programId: TOKEN_PROGRAM,
+                            parsed: {
+                                type: 'transferChecked',
+                                info: { destination: recipientAta, mint: USDC_MINT, tokenAmount: { amount: '950000' } },
+                            },
+                        },
+                        {
+                            programId: TOKEN_PROGRAM,
+                            parsed: {
+                                type: 'transferChecked',
+                                info: { destination: platformAta, mint: USDC_MINT, tokenAmount: { amount: '30000' } },
+                            },
+                        },
+                    ],
+                },
+            },
+        });
+
+    await expect(
+        method.verify({
+            credential: signatureCredential(SIGNATURE, { amount: '1000000', currency: USDC_MINT, decimals: 6, splits }),
+            request: {} as any,
+        }),
+    ).rejects.toThrow(/No TransferChecked instruction found.*3pF8/);
+});
+
 test('splits: multiple splits with SOL', async () => {
     const REFERRER = '7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU';
     const splits = [

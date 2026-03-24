@@ -31,13 +31,8 @@ pnpm add @swig-wallet/kit
 - Native SOL and SPL token transfers (USDC, PYUSD, Token-2022, etc.)
 - Two settlement modes: pull (`type="transaction"`, default) and push (`type="signature"`)
 - Fee sponsorship: server pays transaction fees on behalf of clients
+- Split payments: send one charge to multiple recipients in a single transaction
 - Replay protection via consumed transaction signatures
-
-**Session** (metered / streaming payments)
-- Voucher-based payment channels with monotonic cumulative amounts
-- Multiple authorization modes: `unbounded`, `regular_budget`, `swig_session`
-- Auto-open, auto-topup, and close lifecycle
-- [Swig](https://build.onswig.com) smart wallet integration for on-chain spend limits
 
 **General**
 - Works with [ConnectorKit](https://www.connectorkit.dev), `@solana/kit` keypair signers, and [Solana Keychain](https://github.com/solana-foundation/solana-keychain) remote signers
@@ -70,7 +65,7 @@ mpp-sdk/
 ```
 
 **Exports:**
-- `@solana/mpp` — shared schemas, session types, and authorizers
+- `@solana/mpp` — shared schemas, session types, and authorizers only
 - `@solana/mpp/server` — server-side charge + session, `Mppx`, `Store`
 - `@solana/mpp/client` — client-side charge + session, `Mppx`
 
@@ -115,45 +110,6 @@ const mppx = Mppx.create({
 const response = await mppx.fetch('https://api.example.com/paid-endpoint')
 ```
 
-### Session (metered payments)
-
-**Server:**
-
-```ts
-import { Mppx, solana } from '@solana/mpp/server'
-
-const mppx = Mppx.create({
-  secretKey: process.env.MPP_SECRET_KEY,
-  methods: [
-    solana.session({
-      recipient: 'RecipientPubkey...',
-      asset: { kind: 'sol', decimals: 9 },
-      channelProgram: 'ChannelProgramId...',
-      pricing: { unit: 'request', amountPerUnit: '10', meter: 'api_calls' },
-      sessionDefaults: { suggestedDeposit: '1000', ttlSeconds: 60 },
-    }),
-  ],
-})
-```
-
-**Client:**
-
-```ts
-import { Mppx, solana } from '@solana/mpp/client'
-import { UnboundedAuthorizer } from '@solana/mpp'
-
-const mppx = Mppx.create({
-  methods: [
-    solana.session({
-      signer,
-      authorizer: new UnboundedAuthorizer({ signer, buildOpenTx, buildTopupTx }),
-    }),
-  ],
-})
-
-const response = await mppx.fetch('https://api.example.com/metered-endpoint')
-```
-
 ### Fee Sponsorship (charge)
 
 The server can pay transaction fees on behalf of clients:
@@ -180,13 +136,42 @@ solana.charge({
 
 With fee sponsorship, the client partially signs (transfer authority only) and the server co-signs as fee payer before broadcasting.
 
-### Session Flow
+### Splits (charge)
 
-1. First request: server returns 402, client opens a channel (deposit + voucher)
-2. Subsequent requests: client sends updated vouchers with monotonic cumulative amounts
-3. Server deducts from the channel balance per its pricing config
-4. When balance runs low: client tops up the channel
-5. On close: final voucher settles the channel
+Use `splits` when one charge should pay multiple recipients in the same asset.
+The top-level `amount` is the total paid. The primary `recipient` receives
+`amount - sum(splits)`, and each split recipient receives its own `amount`.
+
+```ts
+import { Mppx, solana } from '@solana/mpp/server'
+
+const mppx = Mppx.create({
+  secretKey: process.env.MPP_SECRET_KEY,
+  methods: [
+    solana.charge({
+      recipient: 'SellerPubkey...',
+      currency: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
+      decimals: 6,
+      splits: [
+        { recipient: 'PlatformPubkey...', amount: '50000', memo: 'platform fee' },
+        { recipient: 'ReferrerPubkey...', amount: '20000', memo: 'referral fee' },
+      ],
+    }),
+  ],
+})
+
+const result = await mppx.charge({
+  amount: '1000000', // total: 1.00 USDC
+  currency: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
+})(request)
+```
+
+In this example:
+- seller receives `930000`
+- platform receives `50000`
+- referrer receives `20000`
+
+The same `splits` shape works for native SOL charges.
 
 ## Demo
 
@@ -227,9 +212,8 @@ just pre-commit       # Full pre-commit checks
 
 This SDK implements the [Solana Charge Intent](https://github.com/tempoxyz/mpp-specs/pull/188) for the [HTTP Payment Authentication Scheme](https://paymentauth.org).
 
-Session method docs and implementation notes:
-
-- [docs/methods/sessions.md](docs/methods/sessions.md)
+Session method docs and implementation notes are intentionally kept out of this
+README for now. See [docs/methods/sessions.md](docs/methods/sessions.md).
 
 ## License
 

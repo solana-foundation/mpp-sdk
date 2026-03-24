@@ -300,14 +300,16 @@ async function verifySplTransfer(
         tokenProgram: address(tokenProgram),
     });
 
-    const transfer = transfers.find(ix => {
+    const index = transfers.findIndex(ix => {
         const info = ix.parsed!.info as { destination: string; mint: string; tokenAmount: { amount: string } };
         return info.destination === expectedAta && info.mint === spl;
     });
 
-    if (!transfer) {
+    if (index === -1) {
         throw new Error(`No TransferChecked instruction found for recipient ${recipientAddress}`);
     }
+
+    const [transfer] = transfers.splice(index, 1);
 
     const info = transfer.parsed!.info as { destination: string; mint: string; tokenAmount: { amount: string } };
     if (info.tokenAmount.amount !== expectedAmount) {
@@ -318,14 +320,16 @@ async function verifySplTransfer(
 }
 
 function verifySolTransfer(transfers: ParsedInstruction[], recipientAddress: string, expectedAmount: string) {
-    const transfer = transfers.find(ix => {
+    const index = transfers.findIndex(ix => {
         const info = ix.parsed!.info as { destination: string };
         return info.destination === recipientAddress;
     });
 
-    if (!transfer) {
+    if (index === -1) {
         throw new Error(`No system transfer instruction found for recipient ${recipientAddress}`);
     }
+
+    const [transfer] = transfers.splice(index, 1);
 
     const info = transfer.parsed!.info as { destination: string; lamports: number };
     if (String(info.lamports) !== expectedAmount) {
