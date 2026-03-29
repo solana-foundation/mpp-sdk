@@ -78,7 +78,6 @@ impl IntentName {
     pub fn is_charge(&self) -> bool {
         self.0.eq_ignore_ascii_case("charge")
     }
-
 }
 
 impl Deref for IntentName {

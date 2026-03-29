@@ -7,7 +7,7 @@ on:
   workflow_call:
 
 permissions:
-  contents: read
+  contents: write
   pull-requests: write
 
 defaults:
@@ -125,18 +125,43 @@ jobs:
             rust/target
           key: ${{ runner.os }}-cargo-rust-${{ hashFiles('rust/Cargo.lock') }}
           restore-keys: ${{ runner.os }}-cargo-rust-
+
       - name: Run tests with coverage
         working-directory: rust
+        env:
+          SURFPOOL_REPORT: "1"
         run: cargo llvm-cov --json --output-path coverage.json
+
+      - name: Generate Surfpool report
+        if: always()
+        working-directory: rust
+        run: cargo test --test charge_integration generate_report -- --nocapture
+
       - name: Rust format check
         working-directory: rust
         run: cargo fmt --check
+
       - name: Upload Rust coverage
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: rust-coverage
           path: rust/coverage.json
+
+      # Publish the Surfpool test report to GitHub Pages
+      - uses: actions/checkout@v4
+        if: always() && github.event_name == 'pull_request'
+        with:
+          repository: solana-foundation/surfpool
+          ref: feat/sdk
+          sparse-checkout: .github/actions
+          path: _surfpool
+
+      - name: Publish Surfpool report
+        if: always() && github.event_name == 'pull_request'
+        uses: ./_surfpool/.github/actions/report
+        with:
+          output-path: rust/target/surfpool-report.html
 
   coverage-report:
     name: Coverage report

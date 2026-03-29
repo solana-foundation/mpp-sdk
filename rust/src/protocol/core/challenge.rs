@@ -564,8 +564,16 @@ mod tests {
             compute_challenge_id("key", "other", "solana", "charge", "req", None, None, None);
         let diff_method =
             compute_challenge_id("key", "realm", "bitcoin", "charge", "req", None, None, None);
-        let diff_intent =
-            compute_challenge_id("key", "realm", "solana", "subscribe", "req", None, None, None);
+        let diff_intent = compute_challenge_id(
+            "key",
+            "realm",
+            "solana",
+            "subscribe",
+            "req",
+            None,
+            None,
+            None,
+        );
         let diff_request =
             compute_challenge_id("key", "realm", "solana", "charge", "xyz", None, None, None);
         let with_expires = compute_challenge_id(

@@ -529,3 +529,12 @@ async fn usdc_charge_wrong_amount_no_broadcast() {
     let amount: u64 = balance.amount.parse().unwrap();
     assert_eq!(amount, 100_000_000, "Signer should still have all 100 USDC");
 }
+
+// ─── Report generation ─────────────────────────────────────────────────
+
+/// Generate an HTML report from all surfpool report data.
+/// Run after other tests: cargo test --test charge_integration generate_report
+#[test]
+fn generate_report() {
+    surfpool_sdk::report::SurfpoolReport::generate(None, None);
+}
