@@ -99,7 +99,10 @@ jobs:
           ln -sfn /tmp/surfpool/crates/sdk-node node_modules/surfpool-sdk
 
       # Run ALL tests (unit + surfpool integration) with coverage
-      - run: pnpm vitest run --coverage --config vitest.config.ci.ts
+      - name: Run tests with coverage
+        run: pnpm vitest run --coverage --config vitest.config.ci.ts
+        env:
+          SURFPOOL_REPORT: "1"
 
       - name: Upload TS coverage
         if: always()
@@ -107,6 +110,14 @@ jobs:
         with:
           name: ts-coverage
           path: typescript/coverage/coverage-summary.json
+
+      - name: Upload TS surfpool report data
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: surfpool-reports-ts
+          path: typescript/target/surfpool-reports/
+          if-no-files-found: ignore
 
   test-rust:
     name: Rust tests
@@ -132,11 +143,6 @@ jobs:
           SURFPOOL_REPORT: "1"
         run: cargo llvm-cov --json --output-path coverage.json
 
-      - name: Generate Surfpool report
-        if: always()
-        working-directory: rust
-        run: cargo test --test charge_integration generate_report -- --nocapture
-
       - name: Rust format check
         working-directory: rust
         run: cargo fmt --check
@@ -148,41 +154,69 @@ jobs:
           name: rust-coverage
           path: rust/coverage.json
 
-      # Publish the Surfpool test report to GitHub Pages
-      - uses: actions/checkout@v4
-        if: always() && github.event_name == 'pull_request'
+      - name: Upload Rust surfpool report data
+        if: always()
+        uses: actions/upload-artifact@v4
         with:
-          repository: solana-foundation/surfpool
-          ref: feat/sdk
-          sparse-checkout: .github/actions
-          path: _surfpool
+          name: surfpool-reports-rust
+          path: rust/target/surfpool-reports/
+          if-no-files-found: ignore
 
-      - name: Publish Surfpool report
-        if: always() && github.event_name == 'pull_request'
-        uses: ./_surfpool/.github/actions/report
-        with:
-          output-path: rust/target/surfpool-report.html
-
-  coverage-report:
-    name: Coverage report
+  report:
+    name: Coverage & Report
     if: always() && github.event_name == 'pull_request'
     needs: [test-ts, test-rust]
     runs-on: ubuntu-latest
     steps:
-      - name: Download TS coverage
-        uses: actions/download-artifact@v4
+      - uses: actions/checkout@v4
+
+      # Download all artifacts
+      - uses: actions/download-artifact@v4
         with:
           name: ts-coverage
           path: ts-cov
         continue-on-error: true
-
-      - name: Download Rust coverage
-        uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v4
         with:
           name: rust-coverage
           path: rust-cov
         continue-on-error: true
+      - uses: actions/download-artifact@v4
+        with:
+          name: surfpool-reports-rust
+          path: surfpool-reports
+        continue-on-error: true
+      - uses: actions/download-artifact@v4
+        with:
+          name: surfpool-reports-ts
+          path: surfpool-reports
+        continue-on-error: true
 
+      # Generate merged Surfpool report from Rust + TS test data
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            rust/target
+          key: ${{ runner.os }}-cargo-rust-${{ hashFiles('rust/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-rust-
+      - name: Generate merged report
+        if: always()
+        run: |
+          COUNT=$(ls surfpool-reports/*.json 2>/dev/null | wc -l)
+          if [ "$COUNT" -gt 0 ]; then
+            echo "Generating report from $COUNT surfpool instances (Rust + TS)..."
+            mkdir -p rust/target
+            ln -sfn "$PWD/surfpool-reports" rust/target/surfpool-reports
+            cd rust && cargo test --test charge_integration generate_report -- --nocapture 2>&1 || true
+            [ -f target/surfpool-report.html ] && cp target/surfpool-report.html ../surfpool-report.html
+          fi
+        working-directory: .
+
+      # Fetch the reusable actions
       - uses: actions/checkout@v4
         with:
           repository: solana-foundation/surfpool
@@ -190,11 +224,19 @@ jobs:
           sparse-checkout: .github/actions
           path: _surfpool
 
-      - name: Post coverage comment
+      # Post coverage comment
+      - name: Post coverage
         uses: ./_surfpool/.github/actions/coverage
         with:
           ts-coverage-json: ts-cov/coverage-summary.json
           rust-coverage-json: rust-cov/coverage.json
+
+      # Publish Surfpool report
+      - name: Publish report
+        if: always()
+        uses: ./_surfpool/.github/actions/report
+        with:
+          output-path: surfpool-report.html
 
   integration:
     name: Integration tests
