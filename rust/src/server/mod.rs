@@ -391,23 +391,18 @@ impl Mpp {
             }
         };
 
-        // 5. Replay protection.
+        // 5. Replay protection (atomic check-and-consume).
         let consumed_key = format!("solana-charge:consumed:{signature_str}");
-        if self
+        let inserted = self
             .store
-            .get(&consumed_key)
+            .put_if_absent(&consumed_key, serde_json::json!(true))
             .await
-            .map_err(|e| VerificationError::new(format!("Store error: {e}")))?
-            .is_some()
-        {
+            .map_err(|e| VerificationError::new(format!("Store error: {e}")))?;
+        if !inserted {
             return Err(VerificationError::signature_consumed(
                 "Transaction signature already consumed",
             ));
         }
-        self.store
-            .put(&consumed_key, serde_json::json!(true))
-            .await
-            .map_err(|e| VerificationError::new(format!("Store error: {e}")))?;
 
         Ok(Receipt::success(METHOD_NAME, &signature_str)
             .with_challenge_id(credential.challenge.id.clone()))
@@ -431,7 +426,12 @@ impl Mpp {
         let mut tx: Transaction = bincode::deserialize(&tx_bytes)
             .map_err(|e| VerificationError::invalid_payload(format!("Invalid transaction: {e}")))?;
 
-        // Co-sign if server is fee payer.
+        // Verify the transaction instructions BEFORE co-signing or broadcasting.
+        // This prevents the server from signing an unverified transaction and
+        // prevents fund loss on invalid credentials.
+        verify_transaction_pre_broadcast(&tx, request, method_details)?;
+
+        // Co-sign if server is fee payer (only after verification passes).
         if method_details.fee_payer.unwrap_or(false) {
             let signer = self.fee_payer_signer.as_ref().ok_or_else(|| {
                 VerificationError::new("Fee payer enabled but no signer configured")
@@ -455,11 +455,6 @@ impl Mpp {
                 })?;
             tx.signatures[idx] = sig;
         }
-
-        // Verify the transaction instructions BEFORE broadcasting.
-        // This prevents the scenario where funds move but the server rejects
-        // the credential (wrong amount, wrong recipient, etc.).
-        verify_transaction_pre_broadcast(&tx, request, method_details)?;
 
         // Simulate before broadcasting (prevent fee loss).
         let sim = self

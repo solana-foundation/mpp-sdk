@@ -52,3 +52,4 @@ thiserror = "2"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full"] }
+surfpool-sdk = { git = "https://github.com/solana-foundation/surfpool", branch = "feat/sdk" }

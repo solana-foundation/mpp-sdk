@@ -145,9 +145,12 @@ pub fn parse_authorization(header: &str) -> Result<PaymentCredential, Error> {
 }
 
 /// Format a PaymentCredential as an Authorization header value.
+///
+/// Uses JCS (RFC 8785) canonicalization before base64url encoding
+/// as required by the spec.
 pub fn format_authorization(credential: &PaymentCredential) -> Result<String, Error> {
-    let json = serde_json::to_string(credential)
-        .map_err(|e| Error::Other(format!("JSON serialization failed: {e}")))?;
+    let json = serde_json_canonicalizer::to_string(credential)
+        .map_err(|e| Error::Other(format!("JCS serialization failed: {e}")))?;
     let encoded = base64url_encode(json.as_bytes());
     Ok(format!("Payment {encoded}"))
 }
@@ -168,9 +171,12 @@ pub fn parse_receipt(header: &str) -> Result<Receipt, Error> {
 }
 
 /// Format a Receipt as a Payment-Receipt header value.
+///
+/// Uses JCS (RFC 8785) canonicalization before base64url encoding
+/// as required by the spec.
 pub fn format_receipt(receipt: &Receipt) -> Result<String, Error> {
-    let json = serde_json::to_string(receipt)
-        .map_err(|e| Error::Other(format!("JSON serialization failed: {e}")))?;
+    let json = serde_json_canonicalizer::to_string(receipt)
+        .map_err(|e| Error::Other(format!("JCS serialization failed: {e}")))?;
     Ok(base64url_encode(json.as_bytes()))
 }
 

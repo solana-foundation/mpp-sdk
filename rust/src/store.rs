@@ -22,6 +22,14 @@ pub trait Store: Send + Sync {
         &self,
         key: &str,
     ) -> Pin<Box<dyn Future<Output = Result<(), StoreError>> + Send + '_>>;
+
+    /// Atomically insert a value only if the key does not already exist.
+    /// Returns `true` if the value was inserted, `false` if the key was already present.
+    fn put_if_absent(
+        &self,
+        key: &str,
+        value: serde_json::Value,
+    ) -> Pin<Box<dyn Future<Output = Result<bool, StoreError>> + Send + '_>>;
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -91,6 +99,28 @@ impl Store for MemoryStore {
     ) -> Pin<Box<dyn Future<Output = Result<(), StoreError>> + Send + '_>> {
         self.data.lock().unwrap().remove(key);
         Box::pin(async { Ok(()) })
+    }
+
+    fn put_if_absent(
+        &self,
+        key: &str,
+        value: serde_json::Value,
+    ) -> Pin<Box<dyn Future<Output = Result<bool, StoreError>> + Send + '_>> {
+        let key = key.to_string();
+        let serialized =
+            serde_json::to_string(&value).map_err(|e| StoreError::Serialization(e.to_string()));
+        Box::pin(async move {
+            let serialized = serialized?;
+            use std::collections::hash_map::Entry;
+            let mut data = self.data.lock().unwrap();
+            match data.entry(key) {
+                Entry::Occupied(_) => Ok(false),
+                Entry::Vacant(e) => {
+                    e.insert(serialized);
+                    Ok(true)
+                }
+            }
+        })
     }
 }
 
