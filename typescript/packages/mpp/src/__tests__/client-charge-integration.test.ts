@@ -87,7 +87,8 @@ describe('client charge integration (surfpool)', () => {
         surfnet = Surfnet.start();
 
         // Create signer from the pre-funded payer key.
-        signer = await createKeyPairSignerFromBytes(surfnet.payerSecretKey);
+        // napi returns Array<number>, @solana/kit needs Uint8Array
+        signer = await createKeyPairSignerFromBytes(new Uint8Array(surfnet.payerSecretKey));
 
         // Generate a recipient address.
         const kp = Surfnet.newKeypair();
