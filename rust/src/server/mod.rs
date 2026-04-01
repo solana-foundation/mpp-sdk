@@ -219,6 +219,14 @@ impl Mpp {
             }
         }
 
+        // Include token program so the client doesn't need to look up the mint account.
+        if self.currency.to_uppercase() != "SOL" {
+            details.insert(
+                "tokenProgram".into(),
+                serde_json::json!(programs::TOKEN_PROGRAM),
+            );
+        }
+
         // Pre-fetch blockhash so the client doesn't need an extra RPC call.
         if let Ok(blockhash) = self.rpc.get_latest_blockhash() {
             details.insert(
