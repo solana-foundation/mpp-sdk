@@ -51,19 +51,41 @@ rs-fmt:
 rs-lint:
     cd rust && cargo clippy -- -D warnings
 
+# ── Go ──
+
+# Build Go SDK
+go-build:
+    mkdir -p /tmp/go-build-cache
+    cd go && GOCACHE=/tmp/go-build-cache go build ./...
+
+# Test Go SDK
+go-test:
+    mkdir -p /tmp/go-build-cache
+    cd go && GOCACHE=/tmp/go-build-cache go test ./...
+
+# Format Go SDK
+go-fmt:
+    cd go && gofmt -w $$(find . -name '*.go' -type f | sort)
+
+# Run Go coverage with a minimum threshold of 70%
+go-test-cover:
+    mkdir -p /tmp/go-build-cache
+    cd go && GOCACHE=/tmp/go-build-cache go test ./... -coverprofile=coverage.out -covermode=atomic
+    cd go && GOCACHE=/tmp/go-build-cache ./scripts/check_coverage.sh coverage.out 70
+
 # ── Orchestration ──
 
 # Build everything
-build: ts-build rs-build
+build: ts-build rs-build go-build
 
 # Run all unit tests
-test: ts-test rs-test
+test: ts-test rs-test go-test
 
 # Run all tests including integration
-test-all: ts-test ts-test-integration rs-test
+test-all: ts-test ts-test-integration rs-test go-test-cover
 
 # Format everything
-fmt: ts-fmt rs-fmt
+fmt: ts-fmt rs-fmt go-fmt
 
 # Pre-commit checks
-pre-commit: ts-audit ts-fmt ts-typecheck ts-test rs-fmt rs-lint rs-test
+pre-commit: ts-audit ts-fmt ts-typecheck ts-test rs-fmt rs-lint rs-test go-fmt go-test-cover

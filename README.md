@@ -51,8 +51,12 @@ mpp-sdk/
 │           ├── Voucher.ts         # Voucher signing and verification
 │           ├── ChannelStore.ts    # Persistent channel state
 │           └── authorizers/       # Pluggable authorization strategies
-├── rust/                          # Rust SDK (coming soon)
+├── rust/                          # Rust SDK
 │   └── src/lib.rs
+├── go/                            # Go SDK
+│   ├── client/                    # Client: build tx, sign, optional broadcast
+│   ├── server/                    # Server: challenge, verify, broadcast
+│   └── protocol/                  # Shared headers, challenge types, charge schema
 └── demo/                          # Interactive playground
 ```
 
@@ -191,8 +195,12 @@ just ts-fmt              # Format and lint
 just ts-build            # Build
 just ts-test             # Unit tests (charge + session, no network)
 just ts-test-integration # Integration tests (requires Surfpool)
+
 # Rust
 cd rust && cargo build
+
+# Go
+cd go && go test ./...
 
 # Everything
 just build            # Build both

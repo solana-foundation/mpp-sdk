@@ -167,6 +167,29 @@ jobs:
           path: rust/target/surfpool-reports/
           if-no-files-found: ignore
 
+  test-go:
+    name: Go tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go/go.mod
+          cache-dependency-path: go/go.sum
+      - name: Run tests with coverage
+        working-directory: go
+        env:
+          GOCACHE: /tmp/go-build-cache
+        run: |
+          go test ./... -coverprofile=coverage.out -covermode=atomic
+          ./scripts/check_coverage.sh coverage.out 70
+      - name: Upload Go coverage
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: go-coverage
+          path: go/coverage.out
+
   integration:
     name: Integration tests
     runs-on: ubuntu-latest
