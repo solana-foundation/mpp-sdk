@@ -6,12 +6,12 @@
 
 use axum::{
     extract::Query,
-    http::{HeaderMap, StatusCode, header},
+    http::{header, HeaderMap, StatusCode},
     response::{IntoResponse, Response},
     routing::get,
 };
-use solana_mpp::server::{html, Config, Mpp};
 use solana_mpp::protocol::core::headers::parse_authorization;
+use solana_mpp::server::{html, Config, Mpp};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -33,9 +33,13 @@ async fn fortune(
                             let ref_id = receipt.reference;
                             return (
                                 StatusCode::OK,
-                                [("content-type", "application/json"), ("payment-receipt", &ref_id)],
+                                [
+                                    ("content-type", "application/json"),
+                                    ("payment-receipt", &ref_id),
+                                ],
                                 r#"{"fortune":"A smooth sea never made a skilled sailor."}"#,
-                            ).into_response();
+                            )
+                                .into_response();
                         }
                         Err(e) => {
                             eprintln!("verify_credential failed: {e}");
@@ -54,9 +58,13 @@ async fn fortune(
     if params.contains_key("__mpp_worker") {
         return (
             StatusCode::OK,
-            [("content-type", "application/javascript"), ("service-worker-allowed", "/")],
+            [
+                ("content-type", "application/javascript"),
+                ("service-worker-allowed", "/"),
+            ],
             html::service_worker_js(),
-        ).into_response();
+        )
+            .into_response();
     }
 
     // Generate challenge.
@@ -64,7 +72,10 @@ async fn fortune(
     let www_auth = solana_mpp::format_www_authenticate(&challenge).unwrap_or_default();
 
     // Browser — HTML payment page.
-    let accept = headers.get(header::ACCEPT).and_then(|v| v.to_str().ok()).unwrap_or("");
+    let accept = headers
+        .get(header::ACCEPT)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
     if html::accepts_html(accept) {
         let page = html::challenge_to_html(&challenge, mpp.rpc_url(), mpp.network());
         return (
@@ -75,33 +86,47 @@ async fn fortune(
                 ("www-authenticate", &www_auth),
             ],
             page,
-        ).into_response();
+        )
+            .into_response();
     }
 
     // API client — JSON 402.
     (
         StatusCode::PAYMENT_REQUIRED,
-        [("content-type", "application/json"), ("www-authenticate", &www_auth)],
+        [
+            ("content-type", "application/json"),
+            ("www-authenticate", &www_auth),
+        ],
         serde_json::to_string(&challenge).unwrap(),
-    ).into_response()
+    )
+        .into_response()
 }
 
 async fn health() -> impl IntoResponse {
-    (StatusCode::OK, [("content-type", "application/json")], r#"{"ok":true}"#)
+    (
+        StatusCode::OK,
+        [("content-type", "application/json")],
+        r#"{"ok":true}"#,
+    )
 }
 
 #[tokio::main]
 async fn main() {
     // No fee payer — test mode client pays its own fees.
-    let mpp = Arc::new(Mpp::new(Config {
-        recipient: "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY".to_string(),
-        secret_key: Some("e2e-test-secret-key-long-enough-for-hmac-operations-1234567890".into()),
-        network: "localnet".to_string(),
-        currency: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v".to_string(),
-        decimals: 6,
-        html: true,
-        ..Default::default()
-    }).expect("valid config"));
+    let mpp = Arc::new(
+        Mpp::new(Config {
+            recipient: "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY".to_string(),
+            secret_key: Some(
+                "e2e-test-secret-key-long-enough-for-hmac-operations-1234567890".into(),
+            ),
+            network: "localnet".to_string(),
+            currency: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v".to_string(),
+            decimals: 6,
+            html: true,
+            ..Default::default()
+        })
+        .expect("valid config"),
+    );
 
     // Fund the recipient so their token account exists (surfpool cheatcode).
     let rpc_url = mpp.rpc_url().to_string();
@@ -127,7 +152,8 @@ async fn main() {
             "method": "surfnet_setTokenAccount",
             "params": [recipient, mint, {"amount": 0, "state": "initialized"}, token_program]
         }))
-        .send().await;
+        .send()
+        .await;
 
     let app = axum::Router::new()
         .route("/fortune", get(fortune))

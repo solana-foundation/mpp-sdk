@@ -65,11 +65,7 @@ pub fn service_worker_js() -> &'static str {
 /// - A CSP meta tag restricting script sources
 ///
 /// All user-controlled values are HTML-escaped to prevent XSS.
-pub fn challenge_to_html(
-    challenge: &PaymentChallenge,
-    rpc_url: &str,
-    network: &str,
-) -> String {
+pub fn challenge_to_html(challenge: &PaymentChallenge, rpc_url: &str, network: &str) -> String {
     let challenge_json = serde_json::to_string_pretty(challenge).unwrap_or_default();
     let test_mode = matches!(network, "devnet" | "localnet");
 
@@ -85,7 +81,12 @@ pub fn challenge_to_html(
     let description_line = challenge
         .description
         .as_deref()
-        .map(|d| format!("<p style=\"color:#4a5568;text-align:center\">{}</p>", escape_html(d)))
+        .map(|d| {
+            format!(
+                "<p style=\"color:#4a5568;text-align:center\">{}</p>",
+                escape_html(d)
+            )
+        })
         .unwrap_or_default();
 
     format!(
@@ -131,7 +132,10 @@ fn escape_html(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::protocol::core::{Base64UrlJson, types::{MethodName, IntentName}};
+    use crate::protocol::core::{
+        types::{IntentName, MethodName},
+        Base64UrlJson,
+    };
 
     fn test_challenge(description: Option<&str>) -> PaymentChallenge {
         PaymentChallenge {
@@ -196,7 +200,11 @@ mod tests {
     #[test]
     fn test_challenge_to_html_mainnet_not_test_mode() {
         let challenge = test_challenge(None);
-        let html = challenge_to_html(&challenge, "https://api.mainnet-beta.solana.com", "mainnet-beta");
+        let html = challenge_to_html(
+            &challenge,
+            "https://api.mainnet-beta.solana.com",
+            "mainnet-beta",
+        );
         assert!(html.contains("\"testMode\":false"));
     }
 
@@ -224,11 +232,14 @@ mod tests {
     fn test_html_enabled_on_mpp() {
         let mpp = crate::server::Mpp::new(crate::server::Config {
             recipient: "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY".to_string(),
-            secret_key: Some("test-secret-key-long-enough-for-hmac-sha256-operations-1234567890".to_string()),
+            secret_key: Some(
+                "test-secret-key-long-enough-for-hmac-sha256-operations-1234567890".to_string(),
+            ),
             network: "devnet".to_string(),
             html: true,
             ..Default::default()
-        }).unwrap();
+        })
+        .unwrap();
 
         assert!(mpp.html_enabled());
         assert_eq!(mpp.network(), "devnet");
