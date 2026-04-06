@@ -10,6 +10,11 @@ go/coverage.out
 luacov.stats.out
 luacov.report.out
 
+# Generated HTML payment link assets (built from html/)
+# Rust/Go/Lua gen files are committed (needed for cargo publish / go get).
+# TypeScript gen file is gitignored (npm publishes dist/).
+typescript/packages/mpp/src/server/html-assets.gen.ts
+
 # Rust
 target/
 Cargo.lock
@@ -19,3 +24,7 @@ Cargo.lock
 DUMP.md
 package/
 go/payment-link-server
+__pycache__/
+.coverage
+.venv/
+*.pyc
