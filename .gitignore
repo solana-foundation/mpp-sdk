@@ -28,3 +28,4 @@ __pycache__/
 .coverage
 .venv/
 *.pyc
+tests/interop/go-client/go-client
