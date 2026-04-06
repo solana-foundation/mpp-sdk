@@ -20,6 +20,10 @@
         "./client": {
             "types": "./dist/client/index.d.ts",
             "default": "./dist/client/index.js"
+        },
+        "./server/html": {
+            "types": "./dist/server/html.d.ts",
+            "default": "./dist/server/html.js"
         }
     },
     "files": [

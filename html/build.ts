@@ -84,6 +84,17 @@ async function main() {
     `-- AUTO-GENERATED — do not edit. Run \`npm run build\` in html/ to regenerate.\nlocal M = {}\nM.payment_ui_js = '${luaEscapedUI}'\nM.service_worker_js = '${luaEscapedSW}'\nreturn M\n`,
   );
 
+  // TypeScript: write as .gen.ts exports for @solana/mpp
+  const tsDir = resolve(import.meta.dirname, '..', 'typescript', 'packages', 'mpp', 'src', 'server');
+  writeGenerated(paymentUI, resolve(tsDir, 'html-assets.gen.ts'), 'PAYMENT_UI_JS');
+  // Append service worker to the same file
+  const swEscaped = serviceWorker.replace(/\\/g, '\\\\').replace(/`/g, '\\`').replace(/\$/g, '\\$');
+  const existingTs = paymentUI.replace(/\\/g, '\\\\').replace(/`/g, '\\`').replace(/\$/g, '\\$');
+  writeFileSync(
+    resolve(tsDir, 'html-assets.gen.ts'),
+    `// AUTO-GENERATED — do not edit. Run \`npm run build\` in html/ to regenerate.\nexport const PAYMENT_UI_JS = \`${existingTs}\`;\nexport const SERVICE_WORKER_JS = \`${swEscaped}\`;\n`,
+  );
+
   console.log('Done!');
 }
 

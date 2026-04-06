@@ -12,8 +12,8 @@ importers:
         specifier: ^6.4.0
         version: 6.5.0(typescript@5.9.3)
       '@solana/mpp':
-        specifier: file:../..
-        version: file:../..(@solana/kit@6.5.0(typescript@5.9.3))(mppx@0.3.16(@modelcontextprotocol/sdk@1.27.1(zod@4.3.6))(express@5.2.1)(hono@4.12.8)(openapi-types@12.1.3)(typescript@5.9.3)(viem@2.47.5(typescript@5.9.3)(zod@4.3.6)))
+        specifier: file:../../typescript/packages/mpp
+        version: file:../../typescript/packages/mpp(@solana/kit@6.5.0(typescript@5.9.3))(mppx@0.3.16(@modelcontextprotocol/sdk@1.27.1(zod@4.3.6))(express@5.2.1)(hono@4.12.8)(openapi-types@12.1.3)(typescript@5.9.3)(viem@2.47.5(typescript@5.9.3)(zod@4.3.6)))
       cors:
         specifier: ^2.8.5
         version: 2.8.6
@@ -299,11 +299,6 @@ packages:
     peerDependencies:
       '@solana/kit': ^6.3.0
 
-  '@solana-program/system@0.11.0':
-    resolution: {integrity: sha512-SJeQVTkqGZzIXd7XHlCxnfpKpvPZghB1IFwddPPG04ydVXtDLRWp9wLoTR5Prkl9FIWRe/c5VgT4nxyzW1cAuQ==}
-    peerDependencies:
-      '@solana/kit': ^6.0.0
-
   '@solana-program/system@0.12.0':
     resolution: {integrity: sha512-ZnAAWeGVMWNtJhw3GdifI2HnhZ0A0H0qs8tBkcFvxp/8wIavvO+GOM4Jd0N22u2+Lni2zcwvcrxrsxj6Mjphng==}
     peerDependencies:
@@ -453,16 +448,11 @@ packages:
       typescript:
         optional: true
 
-  '@solana/mpp@file:../..':
-    resolution: {directory: ../.., type: directory}
-    engines: {node: '>=18'}
+  '@solana/mpp@file:../../typescript/packages/mpp':
+    resolution: {directory: ../../typescript/packages/mpp, type: directory}
     peerDependencies:
       '@solana/kit': '>=6.5.0'
-      '@swig-wallet/kit': '>=1.7.0'
       mppx: '>=0.3.15'
-    peerDependenciesMeta:
-      '@swig-wallet/kit':
-        optional: true
 
   '@solana/nominal-types@6.5.0':
     resolution: {integrity: sha512-HngIM2nlaDPXk0EDX0PklFqpjGDKuOFnlEKS0bfr2F9CorFwiNhNjhb9lPH+FdgsogD1wJ8wgLMMk1LZWn5kgQ==}
@@ -1535,10 +1525,6 @@ snapshots:
     dependencies:
       '@solana/kit': 6.5.0(typescript@5.9.3)
 
-  '@solana-program/system@0.11.0(@solana/kit@6.5.0(typescript@5.9.3))':
-    dependencies:
-      '@solana/kit': 6.5.0(typescript@5.9.3)
-
   '@solana-program/system@0.12.0(@solana/kit@6.5.0(typescript@5.9.3))':
     dependencies:
       '@solana/kit': 6.5.0(typescript@5.9.3)
@@ -1700,10 +1686,10 @@ snapshots:
       - fastestsmallesttextencoderdecoder
       - utf-8-validate
 
-  '@solana/mpp@file:../..(@solana/kit@6.5.0(typescript@5.9.3))(mppx@0.3.16(@modelcontextprotocol/sdk@1.27.1(zod@4.3.6))(express@5.2.1)(hono@4.12.8)(openapi-types@12.1.3)(typescript@5.9.3)(viem@2.47.5(typescript@5.9.3)(zod@4.3.6)))':
+  '@solana/mpp@file:../../typescript/packages/mpp(@solana/kit@6.5.0(typescript@5.9.3))(mppx@0.3.16(@modelcontextprotocol/sdk@1.27.1(zod@4.3.6))(express@5.2.1)(hono@4.12.8)(openapi-types@12.1.3)(typescript@5.9.3)(viem@2.47.5(typescript@5.9.3)(zod@4.3.6)))':
     dependencies:
       '@solana-program/compute-budget': 0.15.0(@solana/kit@6.5.0(typescript@5.9.3))
-      '@solana-program/system': 0.11.0(@solana/kit@6.5.0(typescript@5.9.3))
+      '@solana-program/system': 0.12.0(@solana/kit@6.5.0(typescript@5.9.3))
       '@solana-program/token': 0.11.0(@solana/kit@6.5.0(typescript@5.9.3))
       '@solana/kit': 6.5.0(typescript@5.9.3)
       mppx: 0.3.16(@modelcontextprotocol/sdk@1.27.1(zod@4.3.6))(express@5.2.1)(hono@4.12.8)(openapi-types@12.1.3)(typescript@5.9.3)(viem@2.47.5(typescript@5.9.3)(zod@4.3.6))
