@@ -337,7 +337,7 @@ async function main() {
     : signer.address;
 
   let txMessage = pipe(
-    createTransactionMessage({ version: 0 }),
+    createTransactionMessage({ version: 'legacy' }),
     (m) => setTransactionMessageFeePayer(feePayerAddress, m),
     (m) =>
       setTransactionMessageLifetimeUsingBlockhash(
@@ -377,20 +377,20 @@ async function main() {
     signedTx as Parameters<typeof getBase64EncodedWireTransaction>[0],
   );
 
-  // Build credential JSON
+  // Build credential JSON (ChallengeEcho: id, realm, method, intent, request, expires?, digest?, opaque?)
+  // Note: description is NOT part of the ChallengeEcho, only the challenge itself.
   const credential = {
     challenge: {
       id: challenge.id,
-      realm: challenge.realm,
-      method: challenge.method,
       intent: challenge.intent,
+      method: challenge.method,
+      realm: challenge.realm,
       request: challenge.request,
       ...(challenge.expires ? { expires: challenge.expires } : {}),
-      ...(challenge.description ? { description: challenge.description } : {}),
     },
     payload: {
-      type: 'transaction',
       transaction: txBase64,
+      type: 'transaction',
     },
   };
 
