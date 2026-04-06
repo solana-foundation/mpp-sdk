@@ -26,6 +26,39 @@ from conftest import base64url_decode, base64url_encode, parse_www_authenticate
 
 SYSTEM_PROGRAM = "11111111111111111111111111111111"
 TOKEN_PROGRAM = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+COMPUTE_BUDGET = Pubkey.from_string("ComputeBudget111111111111111111111111111111")
+ATA_PROGRAM = Pubkey.from_string("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL")
+
+
+def build_compute_budget_instructions() -> list[Instruction]:
+    """Build SetComputeUnitPrice + SetComputeUnitLimit instructions."""
+    # SetComputeUnitPrice (discriminator 3, value 1 as u64 LE)
+    price_data = bytes([3]) + (1).to_bytes(8, "little")
+    price_ix = Instruction(COMPUTE_BUDGET, bytes(price_data), [])
+
+    # SetComputeUnitLimit (discriminator 2, value 200000 as u32 LE)
+    limit_data = bytes([2]) + (200_000).to_bytes(4, "little")
+    limit_ix = Instruction(COMPUTE_BUDGET, bytes(limit_data), [])
+
+    return [price_ix, limit_ix]
+
+
+def build_create_ata_idempotent(
+    payer: Pubkey, ata: Pubkey, owner: Pubkey, mint: Pubkey, token_program: Pubkey,
+) -> Instruction:
+    """Build a CreateIdempotent ATA instruction."""
+    return Instruction(
+        ATA_PROGRAM,
+        bytes([1]),
+        [
+            AccountMeta(payer, True, True),
+            AccountMeta(ata, False, True),
+            AccountMeta(owner, False, False),
+            AccountMeta(mint, False, False),
+            AccountMeta(Pubkey.from_string(SYSTEM_PROGRAM), False, False),
+            AccountMeta(token_program, False, False),
+        ],
+    )
 
 
 def rpc_call(rpc_url: str, method: str, params: list) -> dict:
@@ -115,14 +148,16 @@ def test_full_payment_cycle_sol(client: httpx.Client, fortune_path: str, rpc_url
     blockhash = SolanaHash.from_string(blockhash_str)
 
     recipient_key = Pubkey.from_string(recipient)
-    ix = build_sol_transfer(test_keypair.pubkey(), recipient_key, amount)
+    transfer_ix = build_sol_transfer(test_keypair.pubkey(), recipient_key, amount)
+
+    instructions = build_compute_budget_instructions() + [transfer_ix]
 
     has_fee_payer = md.get("feePayer") is True and md.get("feePayerKey")
     if has_fee_payer:
         fee_payer_key = Pubkey.from_string(md["feePayerKey"])
-        msg = Message.new_with_blockhash([ix], fee_payer_key, blockhash)
+        msg = Message.new_with_blockhash(instructions, fee_payer_key, blockhash)
     else:
-        msg = Message.new_with_blockhash([ix], test_keypair.pubkey(), blockhash)
+        msg = Message.new_with_blockhash(instructions, test_keypair.pubkey(), blockhash)
 
     tx = Transaction.new_unsigned(msg)
     if has_fee_payer:
@@ -193,17 +228,31 @@ def test_full_payment_cycle_token(client: httpx.Client, fortune_path: str, rpc_u
         blockhash_str = bh_result["value"]["blockhash"]
     blockhash = SolanaHash.from_string(blockhash_str)
 
-    source_ata = get_ata(test_keypair.pubkey(), mint, token_prog)
-    dest_ata = get_ata(Pubkey.from_string(recipient), mint, token_prog)
-
-    ix = build_token_transfer_checked(source_ata, mint, dest_ata, test_keypair.pubkey(), amount, decimals, token_prog)
-
     has_fee_payer = md.get("feePayer") is True and md.get("feePayerKey")
     if has_fee_payer:
         fee_payer_key = Pubkey.from_string(md["feePayerKey"])
-        msg = Message.new_with_blockhash([ix], fee_payer_key, blockhash)
+        ata_payer = fee_payer_key
     else:
-        msg = Message.new_with_blockhash([ix], test_keypair.pubkey(), blockhash)
+        fee_payer_key = None
+        ata_payer = test_keypair.pubkey()
+
+    source_ata = get_ata(test_keypair.pubkey(), mint, token_prog)
+    recipient_key = Pubkey.from_string(recipient)
+    dest_ata = get_ata(recipient_key, mint, token_prog)
+
+    # Build instruction list: compute budget, then ATA create + transfer for each recipient
+    instructions = build_compute_budget_instructions()
+
+    # Primary recipient: create ATA (idempotent) + transferChecked
+    instructions.append(build_create_ata_idempotent(ata_payer, dest_ata, recipient_key, mint, token_prog))
+    instructions.append(
+        build_token_transfer_checked(source_ata, mint, dest_ata, test_keypair.pubkey(), amount, decimals, token_prog)
+    )
+
+    if has_fee_payer:
+        msg = Message.new_with_blockhash(instructions, fee_payer_key, blockhash)
+    else:
+        msg = Message.new_with_blockhash(instructions, test_keypair.pubkey(), blockhash)
 
     tx = Transaction.new_unsigned(msg)
     if has_fee_payer:

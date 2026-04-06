@@ -456,7 +456,21 @@ impl Mpp {
                     VerificationError::invalid_payload(format!("Invalid base64 transaction: {e}"))
                 })?;
 
-        let mut tx: Transaction = bincode::deserialize(&tx_bytes)
+        // Accept both legacy and versioned (v0) transactions.
+        // Try legacy first (most common from our SDK clients), fall back to versioned.
+        let mut tx: Transaction = bincode::deserialize::<Transaction>(&tx_bytes)
+            .or_else(|_| {
+                // Try versioned transaction — extract the legacy Transaction from it.
+                let versioned: solana_transaction::versioned::VersionedTransaction =
+                    bincode::deserialize(&tx_bytes)?;
+                match versioned.into_legacy_transaction() {
+                    Some(legacy) => Ok(legacy),
+                    None => Err(bincode::Error::from(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "v0 transactions with address lookup tables are not supported",
+                    ))),
+                }
+            })
             .map_err(|e| VerificationError::invalid_payload(format!("Invalid transaction: {e}")))?;
 
         let t0 = std::time::Instant::now();
