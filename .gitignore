@@ -18,3 +18,4 @@ Cargo.lock
 .npm-pack/
 DUMP.md
 package/
+go/payment-link-server

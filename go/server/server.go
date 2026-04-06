@@ -35,6 +35,7 @@ type Config struct {
 	RPCURL         string
 	SecretKey      string
 	Realm          string
+	HTML           bool
 	FeePayerSigner solanautil.Signer
 	Store          mpp.Store
 	RPC            solanautil.RPCClient
@@ -57,6 +58,8 @@ type Mpp struct {
 	currency       string
 	decimals       uint8
 	network        string
+	rpcURL         string
+	html           bool
 	feePayerSigner solanautil.Signer
 	store          mpp.Store
 }
@@ -88,12 +91,12 @@ func New(config Config) (*Mpp, error) {
 	if config.Realm == "" {
 		config.Realm = defaultRealm
 	}
+	rpcURL := config.RPCURL
+	if rpcURL == "" {
+		rpcURL = protocol.DefaultRPCURL(config.Network)
+	}
 	if config.RPC == nil {
-		url := config.RPCURL
-		if url == "" {
-			url = protocol.DefaultRPCURL(config.Network)
-		}
-		config.RPC = rpc.New(url)
+		config.RPC = rpc.New(rpcURL)
 	}
 	if config.Store == nil {
 		config.Store = mpp.NewMemoryStore()
@@ -106,6 +109,8 @@ func New(config Config) (*Mpp, error) {
 		currency:       config.Currency,
 		decimals:       config.Decimals,
 		network:        config.Network,
+		rpcURL:         rpcURL,
+		html:           config.HTML,
 		feePayerSigner: config.FeePayerSigner,
 		store:          config.Store,
 	}, nil
