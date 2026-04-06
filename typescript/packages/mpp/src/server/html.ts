@@ -67,15 +67,15 @@ function escapeHtml(s: string): string {
 }
 
 export interface ChallengeData {
-    id: string;
-    realm: string;
-    method: string;
-    intent: string;
-    request: string;
-    expires?: string;
     description?: string;
     digest?: string;
+    expires?: string;
+    id: string;
+    intent: string;
+    method: string;
     opaque?: string;
+    realm: string;
+    request: string;
 }
 
 export interface PaymentPageOptions {
@@ -138,13 +138,13 @@ export function respondWithPaymentPage(
 ): Response {
     const html = challengeToHtml(options);
     return new Response(html, {
-        status: 402,
         headers: {
-            'Content-Type': 'text/html; charset=utf-8',
+            'Cache-Control': 'no-store',
             'Content-Security-Policy':
                 "default-src 'self'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src *; worker-src 'self'",
+            'Content-Type': 'text/html; charset=utf-8',
             'WWW-Authenticate': options.wwwAuthenticate,
-            'Cache-Control': 'no-store',
         },
+        status: 402,
     });
 }

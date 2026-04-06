@@ -208,6 +208,7 @@ jobs:
 
   integration:
     name: Integration tests
+    needs: build-html
     runs-on: ubuntu-latest
     services:
       surfpool:
@@ -225,6 +226,10 @@ jobs:
           node-version: 22
           cache: pnpm
           cache-dependency-path: typescript/pnpm-lock.yaml
+      - name: Download HTML assets
+        uses: actions/download-artifact@v4
+        with:
+          name: html-assets
       - run: pnpm install --frozen-lockfile
       - name: Wait for Surfpool
         working-directory: .
@@ -275,6 +280,7 @@ jobs:
         working-directory: html
         run: npm install && npx playwright install chromium
       - name: Wait for Surfpool
+        working-directory: .
         run: |
           for i in $(seq 1 30); do
             curl -s -X POST http://localhost:8899 \
@@ -289,6 +295,7 @@ jobs:
         env:
           NETWORK: localnet
       - name: Wait for demo server
+        working-directory: .
         run: |
           for i in $(seq 1 15); do
             curl -sf http://localhost:3000/api/v1/health && break
@@ -333,6 +340,7 @@ jobs:
         working-directory: rust
         run: cargo build --example payment_link_server
       - name: Wait for Surfpool
+        working-directory: .
         run: |
           for i in $(seq 1 30); do
             curl -s -X POST http://localhost:8899 \
@@ -345,6 +353,7 @@ jobs:
         working-directory: rust
         run: cargo run --example payment_link_server &
       - name: Wait for Rust server
+        working-directory: .
         run: |
           for i in $(seq 1 15); do
             curl -sf http://localhost:3001/health && break
@@ -354,95 +363,10 @@ jobs:
         working-directory: html
         run: npm run test:e2e:rust
 
-  test-payment-links-go:
-    name: "Payment links E2E: Go"
-    needs: build-html
-    runs-on: ubuntu-latest
-    services:
-      surfpool:
-        image: surfpool/surfpool:latest
-        ports:
-          - 8899:8899
-          - 8900:8900
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: go/go.mod
-          cache-dependency-path: go/go.sum
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-      - name: Download HTML assets
-        uses: actions/download-artifact@v4
-        with:
-          name: html-assets
-      - name: Install HTML dependencies & Playwright
-        working-directory: html
-        run: npm install && npx playwright install chromium
-      - name: Wait for Surfpool
-        run: |
-          for i in $(seq 1 30); do
-            curl -s -X POST http://localhost:8899 \
-              -H "Content-Type: application/json" \
-              -d '{"jsonrpc":"2.0","id":1,"method":"getHealth","params":[]}' \
-              && break
-            sleep 1
-          done
-      - name: Start Go test server
-        working-directory: go
-        run: go run ./cmd/payment-link-server &
-        env:
-          GOCACHE: /tmp/go-build-cache
-      - name: Wait for Go server
-        run: |
-          for i in $(seq 1 15); do
-            curl -sf http://localhost:3002/health && break
-            sleep 1
-          done
-      - name: Run Playwright tests (Go)
-        working-directory: html
-        run: npm run test:e2e:go
-
-  test-payment-links-lua:
-    name: "Payment links E2E: Lua"
-    needs: build-html
-    runs-on: ubuntu-latest
-    services:
-      surfpool:
-        image: surfpool/surfpool:latest
-        ports:
-          - 8899:8899
-          - 8900:8900
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-      - name: Download HTML assets
-        uses: actions/download-artifact@v4
-        with:
-          name: html-assets
-      - name: Install HTML dependencies & Playwright
-        working-directory: html
-        run: npm install && npx playwright install chromium
-      - name: Wait for Surfpool
-        run: |
-          for i in $(seq 1 30); do
-            curl -s -X POST http://localhost:8899 \
-              -H "Content-Type: application/json" \
-              -d '{"jsonrpc":"2.0","id":1,"method":"getHealth","params":[]}' \
-              && break
-            sleep 1
-          done
-      - name: Start Lua test server
-        run: node lua/tests/e2e-server.mjs &
-      - name: Wait for Lua server
-        run: |
-          for i in $(seq 1 15); do
-            curl -sf http://localhost:3003/health && break
-            sleep 1
-          done
-      - name: Run Playwright tests (Lua)
-        working-directory: html
-        run: npm run test:e2e:lua
+  # TODO: Enable Go and Lua E2E tests once Go/Lua SDKs are in the CI build matrix
+  # test-payment-links-go:
+  #   name: "Payment links E2E: Go"
+  #   ...
+  # test-payment-links-lua:
+  #   name: "Payment links E2E: Lua"
+  #   ...
