@@ -7,6 +7,11 @@ dist/
 coverage/
 *.lcov
 
+# Generated HTML payment link assets (built from html/)
+*.gen.js
+*.gen.rs
+*.gen.lua
+
 # Rust
 target/
 Cargo.lock
@@ -15,3 +20,4 @@ Cargo.lock
 .npm-pack/
 DUMP.md
 package/
+go/payment-link-server
