@@ -147,6 +147,13 @@ jobs:
         run: |
           npm install
           npm run build
+      - name: Verify committed gen files are up to date
+        run: |
+          if ! git diff --quiet -- rust/src/server/html/ go/server/html/ lua/mpp/server/html_assets/; then
+            echo "::error::Generated files are out of date. Run 'just html-build' and commit the results."
+            git diff --stat -- rust/src/server/html/ go/server/html/ lua/mpp/server/html_assets/
+            exit 1
+          fi
       - name: Upload HTML build artifacts
         uses: actions/upload-artifact@v4
         with:
