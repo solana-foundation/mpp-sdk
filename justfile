@@ -73,19 +73,50 @@ go-test-cover:
     cd go && GOCACHE=/tmp/go-build-cache go test ./... -coverprofile=coverage.out -covermode=atomic
     cd go && GOCACHE=/tmp/go-build-cache ./scripts/check_coverage.sh coverage.out 70
 
+# ── Lua ──
+
+# Run Lua SDK tests
+lua-test:
+    cd lua && lua tests/run.lua
+
+# Run Lua SDK coverage with a minimum threshold of 70%
+lua-test-cover:
+    cd lua && rm -f ../luacov.stats.out ../luacov.report.out
+    cd lua && eval "$(luarocks path)" && lua -lluacov tests/run.lua
+    cd lua && eval "$(luarocks path)" && luacov
+    cd lua && ./scripts/check_coverage.sh ../luacov.report.out 70
+
+# ── HTML Payment Links ──
+
+# Install HTML payment link dependencies
+html-install:
+    cd html && npm install
+
+# Build HTML payment link assets (bundles JS for all server implementations)
+html-build:
+    cd html && npm run build
+
+# Build HTML assets in test mode (with sourcemaps)
+html-build-test:
+    cd html && npm run build:test
+
+# Run payment link E2E tests (requires Surfpool on :8899 and demo server on :3000)
+html-test-e2e:
+    cd html && npm run test:e2e
+
 # ── Orchestration ──
 
-# Build everything
-build: ts-build rs-build go-build
+# Build compiled SDKs
+build: html-build ts-build rs-build go-build
 
 # Run all unit tests
-test: ts-test rs-test go-test
+test: ts-test rs-test go-test lua-test
 
-# Run all tests including integration
-test-all: ts-test ts-test-integration rs-test go-test-cover
+# Run all tests including integration + coverage gates
+test-all: ts-test ts-test-integration rs-test go-test-cover lua-test-cover
 
 # Format everything
 fmt: ts-fmt rs-fmt go-fmt
 
 # Pre-commit checks
-pre-commit: ts-audit ts-fmt ts-typecheck ts-test rs-fmt rs-lint rs-test go-fmt go-test-cover
+pre-commit: ts-audit ts-fmt ts-typecheck ts-test rs-fmt rs-lint rs-test go-fmt go-test-cover lua-test-cover
