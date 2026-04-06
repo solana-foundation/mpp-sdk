@@ -24,6 +24,7 @@ import {
   setTransactionMessageLifetimeUsingBlockhash,
   type Address,
   type IInstruction,
+  AccountRole,
 } from '@solana/kit';
 import { getTransferSolInstruction } from '@solana-program/system';
 import {
@@ -261,11 +262,45 @@ async function main() {
     lastValidBlockHeight = value.lastValidBlockHeight;
   }
 
-  // Build instructions
+  // Build instructions — matching the canonical Rust SDK flow:
+  // 1. Compute budget (always)
+  // 2. ATA creation + transfer (for each recipient)
   const instructions: IInstruction[] = [];
 
+  // ── Compute budget ──
+  const COMPUTE_BUDGET = address('ComputeBudget111111111111111111111111111111');
+  // SetComputeUnitPrice: discriminator 3, value 1 micro-lamport
+  const priceData = new Uint8Array(9);
+  priceData[0] = 3;
+  priceData[1] = 1;
+  instructions.push({ programAddress: COMPUTE_BUDGET, data: priceData, accounts: [] });
+  // SetComputeUnitLimit: discriminator 2, value 200_000
+  const limitData = new Uint8Array(5);
+  limitData[0] = 2;
+  new DataView(limitData.buffer).setUint32(1, 200_000, true);
+  instructions.push({ programAddress: COMPUTE_BUDGET, data: limitData, accounts: [] });
+
+  // ── ATA helper ──
+  const ATA_PROGRAM = address('ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL');
+  const SYSTEM_PROGRAM = address('11111111111111111111111111111111');
+  const ataPayer: Address = hasSeparateFeePayer ? address(md.feePayerKey!) : signer.address;
+
+  function createAtaIdempotent(payer: Address, ata: Address, owner: Address, mint: Address, tokenProg: Address): IInstruction {
+    return {
+      programAddress: ATA_PROGRAM,
+      data: new Uint8Array([1]),
+      accounts: [
+        { address: payer, role: AccountRole.WRITABLE_SIGNER },
+        { address: ata, role: AccountRole.WRITABLE },
+        { address: owner, role: AccountRole.READONLY },
+        { address: mint, role: AccountRole.READONLY },
+        { address: SYSTEM_PROGRAM, role: AccountRole.READONLY },
+        { address: tokenProg, role: AccountRole.READONLY },
+      ],
+    };
+  }
+
   if (isNativeSOL) {
-    // Primary SOL transfer
     instructions.push(
       getTransferSolInstruction({
         source: signer,
@@ -273,7 +308,6 @@ async function main() {
         amount: primaryAmount,
       }),
     );
-    // Split transfers
     for (const s of splits) {
       instructions.push(
         getTransferSolInstruction({
@@ -284,7 +318,6 @@ async function main() {
       );
     }
   } else {
-    // SPL token transfers
     const mintAddress = address(currency);
     const decimals = md.decimals ?? 6;
     const tokenProgramAddress = address(tokenProgram);
@@ -295,12 +328,13 @@ async function main() {
       tokenProgram: tokenProgramAddress,
     });
 
+    // Primary: ATA creation + transfer
     const [destAta] = await findAssociatedTokenPda({
       owner: address(recipient),
       mint: mintAddress,
       tokenProgram: tokenProgramAddress,
     });
-
+    instructions.push(createAtaIdempotent(ataPayer, destAta, address(recipient), mintAddress, tokenProgramAddress));
     instructions.push(
       getTransferCheckedInstruction({
         source: sourceAta,
@@ -312,12 +346,14 @@ async function main() {
       }),
     );
 
+    // Splits: ATA creation + transfer each
     for (const s of splits) {
       const [splitAta] = await findAssociatedTokenPda({
         owner: address(s.recipient),
         mint: mintAddress,
         tokenProgram: tokenProgramAddress,
       });
+      instructions.push(createAtaIdempotent(ataPayer, splitAta, address(s.recipient), mintAddress, tokenProgramAddress));
       instructions.push(
         getTransferCheckedInstruction({
           source: sourceAta,
