@@ -27,7 +27,6 @@ The Solana MPP SDK is available in 5 languages. Every implementation follows the
 | **Token-2022** | ✅ | ✅ | ✅ | ✅ | ✅ |
 | **HTTP middleware** | via mppx | — | ✅ | ✅ (`@pay`) | Kong plugin |
 | **Replay protection** | ✅ | ✅ | ✅ | ✅ | ✅ |
-| **Realm auto-detection** | — | — | ✅ | ✅ | — |
 | **Session (pay-as-you-go)** | ✅ | — | — | — | — |
 
 ### Testing
