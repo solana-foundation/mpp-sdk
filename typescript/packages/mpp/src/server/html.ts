@@ -38,7 +38,7 @@ const DATA_ELEMENT_ID = '__MPP_DATA__';
 /** Check if an HTTP Accept header value includes text/html. */
 export function acceptsHtml(accept: string | null | undefined): boolean {
     if (!accept) return false;
-    return accept.split(',').some((part) => part.trim().startsWith('text/html'));
+    return accept.split(',').some(part => part.trim().startsWith('text/html'));
 }
 
 /** Check if a URL contains the service worker query parameter. */
@@ -133,9 +133,7 @@ pre { background: #edf2f7; padding: 16px; border-radius: 8px; overflow-x: auto; 
  *
  * Sets Content-Type, Content-Security-Policy, WWW-Authenticate, and Cache-Control headers.
  */
-export function respondWithPaymentPage(
-    options: PaymentPageOptions & { wwwAuthenticate: string },
-): Response {
+export function respondWithPaymentPage(options: PaymentPageOptions & { wwwAuthenticate: string }): Response {
     const html = challengeToHtml(options);
     return new Response(html, {
         headers: {
