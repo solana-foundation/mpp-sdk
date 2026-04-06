@@ -17,7 +17,7 @@ The Solana MPP SDK is available in 5 languages. Every implementation follows the
 
 | | TypeScript | Rust | Go | Python | Lua |
 |---|:---:|:---:|:---:|:---:|:---:|
-| **Package** | `@solana/mpp` | `solana-mpp` | `go get` | `solana-mpp` | `mpp` |
+| **Package** | [@solana/mpp](https://www.npmjs.com/package/@solana/mpp) | — | — | — | — |
 | **Server (charge)** | ✅ | ✅ | ✅ | ✅ | ✅ |
 | **Client (auto-402)** | ✅ | ✅ | ✅ | ✅ | — |
 | **Payment links** | ✅ | ✅ | ✅ | ✅ | ✅ |
@@ -26,7 +26,7 @@ The Solana MPP SDK is available in 5 languages. Every implementation follows the
 | **SPL tokens** | ✅ | ✅ | ✅ | ✅ | ✅ |
 | **Token-2022** | ✅ | ✅ | ✅ | ✅ | ✅ |
 | **Replay protection** | ✅ | ✅ | ✅ | ✅ | ✅ |
-| **Session (pay-as-you-go)** | ✅ | — | — | — | — |
+| **Session (pay-as-you-go)** | — | — | — | — | — |
 
 ### Testing
 
