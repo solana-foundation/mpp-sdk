@@ -57,27 +57,79 @@ async function main() {
   // 2. Build the service worker for standalone servers (Rust/Go/Lua)
   const serviceWorker = await buildBundle('src/service-worker.ts', 'service-worker.js');
 
-  // 3. Write generated embedding files for each language
+  // 3. Generate the mppx-based HTML template for standalone servers (Rust/Go/Lua)
+  //    Uses mppx's rendering at build time so all servers get the same design.
+  // Import mppx internals directly (not re-exported, but stable across 0.5.x)
+  const Html = await import('./node_modules/mppx/dist/server/internal/html/config.js');
+  const { serviceWorker: serviceWorkerContent } = await import('./node_modules/mppx/dist/server/internal/html/serviceWorker.gen.js');
 
-  // Rust: write JS for include_str!
+  const theme = Html.mergeDefined({
+    favicon: undefined,
+    fontUrl: undefined,
+    logo: { dark: 'https://solana.com/favicon.ico', light: 'https://solana.com/favicon.ico' },
+    ...Html.defaultTheme,
+  }, {});
+  const text = Html.sanitizeRecord(Html.mergeDefined(Html.defaultText, {}));
+
+  // Template uses mustache-style placeholders that servers replace at runtime
+  const htmlTemplate = Html.html`<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="robots" content="noindex" />
+    <meta name="color-scheme" content="${theme.colorScheme}" />
+    <title>${text.title}</title>
+    ${Html.favicon(theme, '')} ${Html.font(theme)} ${Html.style(theme)}
+  </head>
+  <body>
+    <main>
+      <header class="${Html.classNames.header}">
+        ${Html.logo(theme)}
+        <span>${text.paymentRequired}</span>
+      </header>
+      <section class="${Html.classNames.summary}" aria-label="Payment summary">
+        <h1 class="${Html.classNames.summaryAmount}">{{AMOUNT}}</h1>
+        {{DESCRIPTION}}
+        {{EXPIRES}}
+      </section>
+      <div id="${Html.rootId}" aria-label="Payment form"></div>
+      <script id="__MPP_DATA__" type="application/json">{{DATA_JSON}}</script>
+      <script>${paymentUIRaw}</script>
+    </main>
+  </body>
+</html>`;
+
+  // Also generate the service worker content from mppx
+  const mppxServiceWorker = serviceWorkerContent;
+
+  console.log(`  html-template.html (${(htmlTemplate.length / 1024).toFixed(1)} KB)`);
+
+  // 4. Write generated embedding files for each language
+
+  // Rust: write template + service worker for include_str!
   const rustDir = resolve(import.meta.dirname, '..', 'rust', 'src', 'server', 'html');
   mkdirSync(rustDir, { recursive: true });
+  writeFileSync(resolve(rustDir, 'template.gen.html'), htmlTemplate);
+  writeFileSync(resolve(rustDir, 'service_worker.gen.js'), mppxServiceWorker);
+  // Keep raw payment UI for backward compat
   writeFileSync(resolve(rustDir, 'payment_ui.gen.js'), paymentUIRaw);
-  writeFileSync(resolve(rustDir, 'service_worker.gen.js'), serviceWorker);
 
-  // Go: write JS for go:embed
+  // Go: write template + service worker for go:embed
   const goDir = resolve(import.meta.dirname, '..', 'go', 'server', 'html');
   mkdirSync(goDir, { recursive: true });
+  writeFileSync(resolve(goDir, 'template.gen.html'), htmlTemplate);
+  writeFileSync(resolve(goDir, 'service-worker.gen.js'), mppxServiceWorker);
   writeFileSync(resolve(goDir, 'payment-ui.gen.js'), paymentUIRaw);
-  writeFileSync(resolve(goDir, 'service-worker.gen.js'), serviceWorker);
 
-  // Lua: write as Lua module string
+  // Lua: write template + service worker as Lua strings
   const luaDir = resolve(import.meta.dirname, '..', 'lua', 'mpp', 'server', 'html_assets');
   mkdirSync(luaDir, { recursive: true });
-  const luaEscaped = paymentUIRaw.replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/\n/g, '\\n');
+  const luaTemplate = htmlTemplate.replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/\n/g, '\\n');
+  const luaSW = mppxServiceWorker.replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/\n/g, '\\n');
   writeFileSync(
     resolve(luaDir, 'gen.lua'),
-    `-- AUTO-GENERATED — do not edit. Run \`npm run build\` in html/ to regenerate.\nlocal M = {}\nM.payment_ui_js = '${luaEscaped}'\nreturn M\n`,
+    `-- AUTO-GENERATED — do not edit. Run \`npm run build\` in html/ to regenerate.\nlocal M = {}\nM.html_template = '${luaTemplate}'\nM.service_worker_js = '${luaSW}'\nreturn M\n`,
   );
 
   // TypeScript: write as .gen.ts export for @solana/mpp (with <script> wrapper for mppx)

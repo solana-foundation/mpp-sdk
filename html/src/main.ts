@@ -28,9 +28,11 @@ const request = isMppx
 const md = request.methodDetails ?? {};
 const network = md.network ?? rawData.network ?? 'mainnet-beta';
 
-// For credential building: get the request as base64url string
+// For credential building: get the request as base64url string.
+// Standalone (__MPP_DATA__): challenge.request is already base64url — use as-is for HMAC integrity.
+// mppx (__MPPX_DATA__): challenge.request is decoded — re-encode.
 const requestB64ForCredential: string = isMppx
-  ? requestB64ForCredential
+  ? base64UrlEncode(JSON.stringify(challenge.request))
   : challenge.request;
 const testMode = network === 'devnet' || network === 'localnet';
 
