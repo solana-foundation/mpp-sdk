@@ -12,18 +12,12 @@
     "test:e2e:lua": "BASE_URL=http://localhost:3003 npx playwright test tests/payment-link.test.ts --config tests/playwright.config.ts"
   },
   "dependencies": {
-    "@solana-program/system": "^0.7.0",
     "@solana-program/token": "^0.5.0",
-    "@solana-program/token-2022": "^0.4.0",
     "@solana/connector": "^0.2.4",
-    "@solana/kit": "^2.1.0",
-    "react": "^19.1.0",
-    "react-dom": "^19.1.0"
+    "@solana/kit": "^2.1.0"
   },
   "devDependencies": {
     "@playwright/test": "^1.59.1",
-    "@types/react": "^19.1.0",
-    "@types/react-dom": "^19.1.0",
     "esbuild": "^0.25.0",
     "tsx": "^4.19.0",
     "typescript": "^5.7.0"

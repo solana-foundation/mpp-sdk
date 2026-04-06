@@ -50,49 +50,37 @@ async function main() {
   console.log('Building MPP payment link assets...');
 
   // 1. Build the payment UI (IIFE — inlined in HTML)
-  const paymentUI = await buildBundle('src/main.tsx', 'payment-ui.js');
+  const paymentUIRaw = await buildBundle('src/main.ts', 'payment-ui.js');
+  // mppx injects `content` as raw HTML — wrap in <script> tags.
+  const paymentUI = `<script>${paymentUIRaw}</script>`;
 
-  // 2. Build the service worker (IIFE — served at ?__mpp_worker)
-  const serviceWorker = await buildBundle('src/service-worker.ts', 'service-worker.js');
+  // 2. Write generated embedding files for each language
 
-  // 3. Write generated embedding files for each language
-
-  // Rust: write as .rs const
+  // Rust: write JS for include_str!
   const rustDir = resolve(import.meta.dirname, '..', 'rust', 'src', 'server', 'html');
   mkdirSync(rustDir, { recursive: true });
-  writeFileSync(
-    resolve(rustDir, 'payment_ui.gen.rs'),
-    `// AUTO-GENERATED — do not edit. Run \`npm run build\` in html/ to regenerate.\npub const PAYMENT_UI_JS: &str = include_str!("payment_ui.gen.js");\npub const SERVICE_WORKER_JS: &str = include_str!("service_worker.gen.js");\n`,
-  );
-  writeFileSync(resolve(rustDir, 'payment_ui.gen.js'), paymentUI);
-  writeFileSync(resolve(rustDir, 'service_worker.gen.js'), serviceWorker);
+  writeFileSync(resolve(rustDir, 'payment_ui.gen.js'), paymentUIRaw);
 
-  // Go: write JS files for go:embed
+  // Go: write JS for go:embed
   const goDir = resolve(import.meta.dirname, '..', 'go', 'server', 'html');
   mkdirSync(goDir, { recursive: true });
-  writeFileSync(resolve(goDir, 'payment-ui.gen.js'), paymentUI);
-  writeFileSync(resolve(goDir, 'service-worker.gen.js'), serviceWorker);
+  writeFileSync(resolve(goDir, 'payment-ui.gen.js'), paymentUIRaw);
 
-  // Lua: write as Lua module strings
-  // Use html_assets/ (not html/) to avoid dots in filename confusing require()
+  // Lua: write as Lua module string
   const luaDir = resolve(import.meta.dirname, '..', 'lua', 'mpp', 'server', 'html_assets');
   mkdirSync(luaDir, { recursive: true });
-  const luaEscapedUI = paymentUI.replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/\n/g, '\\n');
-  const luaEscapedSW = serviceWorker.replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/\n/g, '\\n');
+  const luaEscaped = paymentUIRaw.replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/\n/g, '\\n');
   writeFileSync(
     resolve(luaDir, 'gen.lua'),
-    `-- AUTO-GENERATED — do not edit. Run \`npm run build\` in html/ to regenerate.\nlocal M = {}\nM.payment_ui_js = '${luaEscapedUI}'\nM.service_worker_js = '${luaEscapedSW}'\nreturn M\n`,
+    `-- AUTO-GENERATED — do not edit. Run \`npm run build\` in html/ to regenerate.\nlocal M = {}\nM.payment_ui_js = '${luaEscaped}'\nreturn M\n`,
   );
 
-  // TypeScript: write as .gen.ts exports for @solana/mpp
+  // TypeScript: write as .gen.ts export for @solana/mpp (with <script> wrapper for mppx)
   const tsDir = resolve(import.meta.dirname, '..', 'typescript', 'packages', 'mpp', 'src', 'server');
-  writeGenerated(paymentUI, resolve(tsDir, 'html-assets.gen.ts'), 'PAYMENT_UI_JS');
-  // Append service worker to the same file
-  const swEscaped = serviceWorker.replace(/\\/g, '\\\\').replace(/`/g, '\\`').replace(/\$/g, '\\$');
-  const existingTs = paymentUI.replace(/\\/g, '\\\\').replace(/`/g, '\\`').replace(/\$/g, '\\$');
+  const escaped = paymentUI.replace(/\\/g, '\\\\').replace(/`/g, '\\`').replace(/\$/g, '\\$');
   writeFileSync(
     resolve(tsDir, 'html-assets.gen.ts'),
-    `// AUTO-GENERATED — do not edit. Run \`npm run build\` in html/ to regenerate.\nexport const PAYMENT_UI_JS = \`${existingTs}\`;\nexport const SERVICE_WORKER_JS = \`${swEscaped}\`;\n`,
+    `// AUTO-GENERATED — do not edit. Run \`npm run build\` in html/ to regenerate.\nexport const PAYMENT_UI_JS = \`${escaped}\`;\n`,
   );
 
   console.log('Done!');

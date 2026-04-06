@@ -4,13 +4,14 @@
  * Demonstrates browser-based payment links: navigate to the endpoint in a
  * browser and you'll see an interactive payment page instead of raw JSON.
  *
- * - GET /api/v1/fortune        → browser: HTML payment page, API client: 402 JSON
- * - GET /api/v1/fortune?__mpp_worker → service worker JS
+ * The `html: true` option on `solana.charge()` makes this seamless —
+ * `result.challenge` automatically returns HTML for browsers and JSON for
+ * API clients. No manual content negotiation needed.
  */
 
 import type { Express, Request, Response as ExpressResponse } from 'express'
 import type { KeyPairSigner } from '@solana/kit'
-import { Mppx, solana, html } from '../sdk.js'
+import { Mppx, solana } from '../sdk.js'
 import { toWebRequest, logPayment } from '../utils.js'
 import { USDC_MINT, USDC_DECIMALS } from '../constants.js'
 
@@ -25,8 +26,6 @@ const FORTUNES = [
   'A smooth long journey! Great expectations.',
   'All your hard work will soon pay off.',
   'An important person will offer you support.',
-  'Be careful or you could fall for some tricks today.',
-  'Believe in yourself and others will too.',
   'Curiosity kills boredom. Nothing can kill curiosity.',
   'Disbelief destroys the magic.',
   'Every day in your life is a special occasion.',
@@ -37,18 +36,6 @@ const FORTUNES = [
   'If you continually give, you will continually have.',
 ]
 
-/** Parse the WWW-Authenticate header into a challenge object. */
-function parseWWWAuthenticate(header: string): Record<string, string> {
-  const result: Record<string, string> = {}
-  const params = header.replace(/^Payment\s+/i, '')
-  const regex = /(\w+)="([^"]*)"/g
-  let match: RegExpExecArray | null
-  while ((match = regex.exec(params)) !== null) {
-    result[match[1]] = match[2]
-  }
-  return result
-}
-
 export function registerPaymentLink(
   app: Express,
   recipient: string,
@@ -56,56 +43,39 @@ export function registerPaymentLink(
   secretKey: string,
   feePayerSigner: KeyPairSigner,
 ) {
-  const rpcUrl = network === 'localnet' || network === 'devnet'
-    ? 'http://localhost:8899'
-    : 'https://api.mainnet-beta.solana.com'
+  const rpcUrl = process.env.RPC_URL
+  const isMainnet = network === 'mainnet-beta'
 
   const mppx = Mppx.create({
     secretKey,
     methods: [solana.charge({
       recipient,
       network,
-      signer: feePayerSigner,
+      // Fee payer only on testnet (mainnet needs a funded signer)
+      ...(!isMainnet && { signer: feePayerSigner }),
+      ...(rpcUrl && { rpcUrl }),
       currency: USDC_MINT,
       decimals: USDC_DECIMALS,
+      html: true,
     })],
   })
 
   app.get('/api/v1/fortune', async (req: Request, res: ExpressResponse) => {
-    // Serve the service worker JS
-    if (html.isServiceWorkerRequest(req.originalUrl)) {
-      res.setHeader('Content-Type', 'application/javascript')
-      res.setHeader('Service-Worker-Allowed', '/')
-      res.send(html.serviceWorkerJs())
-      return
-    }
-
     const result = await mppx.charge({
       amount: '10000', // 0.01 USDC (6 decimals)
       currency: USDC_MINT,
       description: 'Open a fortune cookie',
     })(toWebRequest(req))
 
+    // Forward the response (402 challenge, service worker JS, etc.)
     if (result.status === 402) {
       const challenge = result.challenge as globalThis.Response
-
-      // Browser request → HTML payment page (using @solana/mpp html module)
-      if (html.acceptsHtml(req.headers.accept)) {
-        const wwwAuth = challenge.headers.get('WWW-Authenticate') ?? ''
-        const parsed = parseWWWAuthenticate(wwwAuth)
-        const response = html.respondWithPaymentPage({
-          challenge: parsed as any,
-          network,
-          rpcUrl,
-          wwwAuthenticate: wwwAuth,
-        })
-        res.writeHead(response.status, Object.fromEntries(response.headers))
-        res.end(await response.text())
-        return
+      const headers = Object.fromEntries(challenge.headers)
+      // Service worker needs this header to register at scope '/'
+      if (headers['content-type']?.includes('javascript')) {
+        headers['service-worker-allowed'] = '/'
       }
-
-      // API client → standard 402 JSON
-      res.writeHead(challenge.status, Object.fromEntries(challenge.headers))
+      res.writeHead(challenge.status, headers)
       res.end(await challenge.text())
       return
     }

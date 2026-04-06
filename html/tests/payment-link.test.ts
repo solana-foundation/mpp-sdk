@@ -1,7 +1,6 @@
 import { test, expect } from '@playwright/test';
 
 // Configurable via env: FORTUNE_PATH defaults to /fortune
-// Demo server uses /api/v1/fortune, standalone test servers use /fortune
 const FORTUNE = process.env.FORTUNE_PATH ?? '/fortune';
 
 test('payment link page renders correctly', async ({ page }) => {
@@ -9,22 +8,22 @@ test('payment link page renders correctly', async ({ page }) => {
   expect(response?.status()).toBe(402);
   expect(response?.headers()['content-type']).toContain('text/html');
   await expect(page.locator('#root')).toBeVisible();
-  await expect(page.getByRole('button', { name: /Pay/i })).toBeEnabled();
+  await expect(page.getByRole('button', { name: /Continue with Solana/i })).toBeEnabled();
 });
 
 test('clicking pay triggers the payment flow', async ({ page, context }) => {
   const swPromise = context.waitForEvent('serviceworker', { timeout: 30_000 });
 
   await page.goto(FORTUNE, { waitUntil: 'networkidle' });
-  await page.getByRole('button', { name: /Pay/i }).click();
+  await page.getByRole('button', { name: /Continue with Solana/i }).click();
 
   const sw = await swPromise;
-  expect(sw.url()).toContain('__mpp_worker');
+  expect(sw.url()).toContain('__mppx_worker');
 });
 
 test('full e2e: payment completes and returns fortune', async ({ page }) => {
   await page.goto(FORTUNE, { waitUntil: 'networkidle' });
-  await page.getByRole('button', { name: /Pay/i }).click();
+  await page.getByRole('button', { name: /Continue with Solana/i }).click();
 
   // Wait for the service worker reload cycle
   await page.waitForLoadState('networkidle', { timeout: 30_000 });
@@ -44,7 +43,7 @@ test('full e2e: payment completes and returns fortune', async ({ page }) => {
 });
 
 test('service worker endpoint returns javascript', async ({ page }) => {
-  const response = await page.goto(`${FORTUNE}?__mpp_worker=1`);
+  const response = await page.goto(`${FORTUNE}?__mppx_worker=1`);
   expect(response?.status()).toBe(200);
   expect(response?.headers()['content-type']).toContain('application/javascript');
   const body = await response?.text();
