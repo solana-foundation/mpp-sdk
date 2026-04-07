@@ -42,6 +42,12 @@ export const ENDPOINTS: Endpoint[] = [
       { name: 'referrer', default: '' },
     ],
   },
+  {
+    method: 'GET',
+    path: '/api/v1/fortune',
+    description: 'Fortune cookie (payment link)',
+    cost: '0.01 USDC',
+  },
 ]
 
 /** Build a URL from an endpoint and parameter values. */

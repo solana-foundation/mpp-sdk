@@ -151,33 +151,68 @@ function Playground() {
         </button>
       </div>
       {ENDPOINTS.map((ep, i) => (
-        <button
+        <div
           key={ep.path}
           style={{
-            ...s.epBtn,
+            display: "flex",
+            alignItems: "center",
             background: i === selectedIdx ? "#1A1A2A" : "transparent",
+            borderBottom: "1px solid",
             borderColor: i === selectedIdx ? "#9945FF" : "#222",
           }}
-          onClick={() => {
-            setSelectedIdx(i);
-            setParamValues({});
-          }}
         >
-          <span
+          <button
             style={{
-              color: ep.method === "GET" ? "#14F195" : "#FFD700",
-              fontSize: 10,
+              ...s.epBtn,
+              flex: 1,
+              background: "transparent",
+              border: "none",
+              borderBottom: "none",
+            }}
+            onClick={() => {
+              setSelectedIdx(i);
+              setParamValues({});
             }}
           >
-            {ep.method}
-          </span>
-          <span style={{ color: "#ccc", fontSize: 12, marginLeft: 8 }}>
-            {ep.description}
-          </span>
-          <span style={{ color: "#666", fontSize: 10, marginLeft: "auto" }}>
-            {ep.cost}
-          </span>
-        </button>
+            <span
+              style={{
+                color: ep.method === "GET" ? "#14F195" : "#FFD700",
+                fontSize: 10,
+              }}
+            >
+              {ep.method}
+            </span>
+            <span style={{ color: "#ccc", fontSize: 12, marginLeft: 8 }}>
+              {ep.description}
+            </span>
+            <span style={{ color: "#666", fontSize: 10, marginLeft: "auto" }}>
+              {ep.cost}
+            </span>
+          </button>
+          {ep.cost && (
+            <a
+              href={buildUrl(ep, {})}
+              target="_blank"
+              rel="noopener noreferrer"
+              title="Open payment link"
+              style={{
+                padding: "8px 10px",
+                color: "#555",
+                display: "flex",
+                alignItems: "center",
+                textDecoration: "none",
+                flexShrink: 0,
+              }}
+              onMouseEnter={(e) => (e.currentTarget.style.color = "#9945FF")}
+              onMouseLeave={(e) => (e.currentTarget.style.color = "#555")}
+              onClick={(e) => e.stopPropagation()}
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 20 20" fill="currentColor">
+                <path fillRule="evenodd" d="M4.25 5.5a.75.75 0 0 0-.75.75v8.5c0 .414.336.75.75.75h8.5a.75.75 0 0 0 .75-.75v-4a.75.75 0 0 1 1.5 0v4A2.25 2.25 0 0 1 12.75 17h-8.5A2.25 2.25 0 0 1 2 14.75v-8.5A2.25 2.25 0 0 1 4.25 4h5a.75.75 0 0 1 0 1.5h-5Zm7.25-.182a.75.75 0 0 1 .75-.75h3.5a.75.75 0 0 1 .75.75v3.5a.75.75 0 0 1-1.5 0V6.56l-5.22 5.22a.75.75 0 1 1-1.06-1.06l5.22-5.22h-2.19a.75.75 0 0 1-.75-.75Z" clipRule="evenodd" />
+              </svg>
+            </a>
+          )}
+        </div>
       ))}
       <div style={s.sidebarBottom}>
         {feePayerInfo && (
