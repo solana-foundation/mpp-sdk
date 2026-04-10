@@ -35,12 +35,12 @@ export const LOCALNET_NETWORK = 'localnet';
  * configured for any network other than `localnet`.
  */
 export class WrongNetworkError extends Error {
+    readonly blockhash: string;
     readonly code = 'wrong-network' as const;
     readonly expected: string;
     readonly received = 'localnet' as const;
-    readonly blockhash: string;
 
-    constructor(opts: { expected: string; blockhash: string; message: string }) {
+    constructor(opts: { blockhash: string; expected: string; message: string }) {
         super(opts.message);
         this.name = 'WrongNetworkError';
         this.expected = opts.expected;
@@ -63,8 +63,8 @@ export function checkNetworkBlockhash(network: string, blockhashB58: string): vo
     // The structured `blockhash` field on the error is still set so
     // tooling can read it programmatically.
     throw new WrongNetworkError({
-        expected: network,
         blockhash: blockhashB58,
+        expected: network,
         message:
             `Signed against localnet but the server expects ${network}. ` +
             `Switch your client RPC to ${network} and re-sign.`,

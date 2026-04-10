@@ -1,10 +1,6 @@
 import { describe, expect, test } from 'vitest';
 
-import {
-    checkNetworkBlockhash,
-    SURFPOOL_BLOCKHASH_PREFIX,
-    WrongNetworkError,
-} from '../server/network-check.js';
+import { checkNetworkBlockhash, SURFPOOL_BLOCKHASH_PREFIX, WrongNetworkError } from '../server/network-check.js';
 
 // Pure-function tests for the Surfpool-prefix-vs-non-localnet check.
 // The check is asymmetric: a Surfpool-prefixed blockhash is only valid
@@ -15,28 +11,20 @@ describe('checkNetworkBlockhash', () => {
     // ── happy paths ────────────────────────────────────────────────────────
 
     test('localnet + Surfpool-prefixed hash is ok', () => {
-        expect(() =>
-            checkNetworkBlockhash('localnet', 'SURFNETxSAFEHASHxxxxxxxxxxxxxxxxxxx1892bcad'),
-        ).not.toThrow();
+        expect(() => checkNetworkBlockhash('localnet', 'SURFNETxSAFEHASHxxxxxxxxxxxxxxxxxxx1892bcad')).not.toThrow();
     });
 
     test('localnet + real hash is ok', () => {
         // Real localnet validator (not Surfpool) — also valid.
-        expect(() =>
-            checkNetworkBlockhash('localnet', '11111111111111111111111111111111'),
-        ).not.toThrow();
+        expect(() => checkNetworkBlockhash('localnet', '11111111111111111111111111111111')).not.toThrow();
     });
 
     test('mainnet + real hash is ok', () => {
-        expect(() =>
-            checkNetworkBlockhash('mainnet', '9zrUHnA1nCByPksy3aL8tQ47vqdaG2vnFs4HrxgcZj4F'),
-        ).not.toThrow();
+        expect(() => checkNetworkBlockhash('mainnet', '9zrUHnA1nCByPksy3aL8tQ47vqdaG2vnFs4HrxgcZj4F')).not.toThrow();
     });
 
     test('devnet + real hash is ok', () => {
-        expect(() =>
-            checkNetworkBlockhash('devnet', 'EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N'),
-        ).not.toThrow();
+        expect(() => checkNetworkBlockhash('devnet', 'EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N')).not.toThrow();
     });
 
     // ── the actual bug surface ─────────────────────────────────────────────
@@ -62,31 +50,25 @@ describe('checkNetworkBlockhash', () => {
     });
 
     test('devnet rejects Surfpool-prefixed hash', () => {
-        expect(() =>
-            checkNetworkBlockhash('devnet', 'SURFNETxSAFEHASHxxxxxxxxxxxxxxxxxxx1892bcad'),
-        ).toThrow(WrongNetworkError);
+        expect(() => checkNetworkBlockhash('devnet', 'SURFNETxSAFEHASHxxxxxxxxxxxxxxxxxxx1892bcad')).toThrow(
+            WrongNetworkError,
+        );
     });
 
     // ── edge cases ─────────────────────────────────────────────────────────
 
     test('partial prefix (SURFNETx alone) does NOT match', () => {
-        expect(() =>
-            checkNetworkBlockhash('mainnet', 'SURFNETx9zrUHnA1nCByPksy'),
-        ).not.toThrow();
+        expect(() => checkNetworkBlockhash('mainnet', 'SURFNETx9zrUHnA1nCByPksy')).not.toThrow();
     });
 
     test('exact prefix only is treated as Surfpool', () => {
         expect(() => checkNetworkBlockhash('localnet', SURFPOOL_BLOCKHASH_PREFIX)).not.toThrow();
-        expect(() => checkNetworkBlockhash('mainnet', SURFPOOL_BLOCKHASH_PREFIX)).toThrow(
-            WrongNetworkError,
-        );
+        expect(() => checkNetworkBlockhash('mainnet', SURFPOOL_BLOCKHASH_PREFIX)).toThrow(WrongNetworkError);
     });
 
     test('non-Surfpool hash passes on every network (asymmetric design)', () => {
         for (const network of ['mainnet', 'devnet', 'localnet']) {
-            expect(() =>
-                checkNetworkBlockhash(network, '11111111111111111111111111111111'),
-            ).not.toThrow();
+            expect(() => checkNetworkBlockhash(network, '11111111111111111111111111111111')).not.toThrow();
         }
     });
 });

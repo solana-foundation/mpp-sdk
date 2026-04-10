@@ -199,7 +199,7 @@ function extractRecentBlockhash(clientTxBase64: string): string {
     const txBytes = getBase64Codec().encode(clientTxBase64);
     const decoded = getTransactionDecoder().decode(txBytes);
     const message = getCompiledTransactionMessageDecoder().decode(decoded.messageBytes);
-    return message.lifetimeToken as string;
+    return message.lifetimeToken;
 }
 
 // ── Pull mode (type="transaction") ──
