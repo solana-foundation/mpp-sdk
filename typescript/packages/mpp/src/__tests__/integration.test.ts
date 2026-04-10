@@ -467,9 +467,13 @@ test('e2e: native SOL charge with splits', async () => {
     const referrerSigner = await generateKeyPairSigner();
 
     const secretKey = 'test-secret-key-sol-splits';
+    // Split amounts must be >= rent-exempt minimum (~890_880 lamports)
+    // because the recipient accounts are freshly generated keypairs that
+    // don't yet exist on-chain, and Solana refuses to create system
+    // accounts with sub-rent-exempt balances.
     const splits = [
-        { recipient: platformSigner.address, amount: '50000' },
-        { recipient: referrerSigner.address, amount: '20000' },
+        { recipient: platformSigner.address, amount: '1000000' },
+        { recipient: referrerSigner.address, amount: '1000000' },
     ];
 
     const solSplitsMppx = ServerMppx.create({
@@ -489,7 +493,7 @@ test('e2e: native SOL charge with splits', async () => {
         const webReq = toWebRequest(req, body);
 
         const result = await solSplitsMppx.charge({
-            amount: '1070000', // 1M to recipient + 50k platform + 20k referrer
+            amount: '3000000', // 1M primary + 1M platform + 1M referrer
             currency: 'sol',
         })(webReq);
 
@@ -527,8 +531,8 @@ test('e2e: native SOL charge with splits', async () => {
         const platformAfter = await getBalance(client, platformSigner.address);
         const referrerAfter = await getBalance(client, referrerSigner.address);
 
-        expect(platformAfter - platformBefore).toBe(50_000n);
-        expect(referrerAfter - referrerBefore).toBe(20_000n);
+        expect(platformAfter - platformBefore).toBe(1_000_000n);
+        expect(referrerAfter - referrerBefore).toBe(1_000_000n);
     } finally {
         solSplitsServer.close();
     }

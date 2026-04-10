@@ -195,11 +195,19 @@ function resolvePayloadType(payload: {
 // instruction decode. The compiled message decoder gives us a
 // `lifetimeToken` (== recent blockhash, base58 string) for non-durable-nonce
 // transactions, which is exactly what we need.
-function extractRecentBlockhash(clientTxBase64: string): string {
-    const txBytes = getBase64Codec().encode(clientTxBase64);
-    const decoded = getTransactionDecoder().decode(txBytes);
-    const message = getCompiledTransactionMessageDecoder().decode(decoded.messageBytes);
-    return message.lifetimeToken;
+//
+// Returns `null` if the transaction can't be decoded — we leave the real
+// error reporting to the downstream broadcast, same fail-open policy as
+// `checkNetworkBlockhash` uses for non-prefixed blockhashes.
+function extractRecentBlockhash(clientTxBase64: string): string | null {
+    try {
+        const txBytes = getBase64Codec().encode(clientTxBase64);
+        const decoded = getTransactionDecoder().decode(txBytes);
+        const message = getCompiledTransactionMessageDecoder().decode(decoded.messageBytes);
+        return message.lifetimeToken;
+    } catch {
+        return null;
+    }
 }
 
 // ── Pull mode (type="transaction") ──
@@ -222,7 +230,10 @@ async function verifyTransaction(
     // (e.g. mainnet keypair pointed at a sandbox-configured server, or
     // vice versa). Cheaper and clearer than letting the broadcast fail
     // with a confusing "transaction not found" error.
-    checkNetworkBlockhash(network, extractRecentBlockhash(clientTxBase64));
+    const recentBlockhash = extractRecentBlockhash(clientTxBase64);
+    if (recentBlockhash !== null) {
+        checkNetworkBlockhash(network, recentBlockhash);
+    }
 
     let txToSend = clientTxBase64;
 
