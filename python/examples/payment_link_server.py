@@ -9,6 +9,8 @@ import json
 import random
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
+from solana.rpc.async_api import AsyncClient
+
 from solana_mpp._headers import format_www_authenticate, parse_authorization
 from solana_mpp.server.mpp import ChargeOptions, Config, Mpp
 from solana_mpp.server.payment_page import (
@@ -39,6 +41,7 @@ mpp = Mpp(Config(
     rpc_url=RPC_URL,
     html=True,
     store=MemoryStore(),
+    rpc=AsyncClient(RPC_URL),
 ))
 
 # Fund recipient at startup

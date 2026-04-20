@@ -7,6 +7,8 @@ import pytest
 import solana_mpp.server.mpp as server_mpp
 from solana_mpp._errors import ChallengeExpiredError, ChallengeMismatchError, PaymentError, ReplayError
 from solana_mpp._types import ChallengeEcho, PaymentCredential
+from solders.pubkey import Pubkey
+
 from solana_mpp.protocol.intents import ChargeRequest
 from solana_mpp.protocol.solana import MethodDetails, Split
 from solana_mpp.server.mpp import (
@@ -19,6 +21,17 @@ from solana_mpp.server.mpp import (
 
 TEST_SECRET = "test-secret-key-that-is-long-enough-for-hmac-sha256"
 TEST_RECIPIENT = "11111111111111111111111111111112"
+TOKEN_PROGRAM = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+ATA_PROGRAM = Pubkey.from_string("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL")
+
+
+def _derive_ata(owner: str, mint: str, token_program: str = TOKEN_PROGRAM) -> str:
+    """Derive ATA address for test helpers."""
+    owner_pk = Pubkey.from_string(owner)
+    mint_pk = Pubkey.from_string(mint)
+    tp_pk = Pubkey.from_string(token_program)
+    ata, _ = Pubkey.find_program_address([bytes(owner_pk), bytes(tp_pk), bytes(mint_pk)], ATA_PROGRAM)
+    return str(ata)
 
 
 class FakeResponse:
@@ -27,11 +40,10 @@ class FakeResponse:
 
 
 class FakeRPC:
-    def __init__(self, tx=None, send_value="sig-123", statuses=None, token_accounts=None):
+    def __init__(self, tx=None, send_value="sig-123", statuses=None):
         self.tx = tx
         self.send_value = send_value
         self.statuses = statuses if statuses is not None else [{"err": None}]
-        self.token_accounts = token_accounts or {}
         self.sent = []
 
     async def get_transaction(self, *_args, **_kwargs):
@@ -43,9 +55,6 @@ class FakeRPC:
 
     async def confirm_transaction(self, *_args, **_kwargs):
         return FakeResponse(self.statuses)
-
-    def get_token_account(self, address: str):
-        return self.token_accounts.get(address)
 
 
 @pytest.fixture
@@ -331,16 +340,20 @@ class TestParsedTransferVerification:
         _verify_parsed_sol_transfers(instructions, request, details)
 
     def test_spl_verifier_rejects_wrong_mint(self):
-        request = ChargeRequest(amount="1000", currency="mint-expected", recipient="recipient-1")
-        details = MethodDetails(token_program="TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA")
+        # Use real pubkeys for mint addresses
+        expected_mint = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+        wrong_mint = "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB"
+        recipient = "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY"
+        request = ChargeRequest(amount="1000", currency=expected_mint, recipient=recipient)
+        details = MethodDetails(token_program=TOKEN_PROGRAM)
         instructions = [
             {
-                "programId": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+                "programId": TOKEN_PROGRAM,
                 "parsed": {
                     "type": "transferChecked",
                     "info": {
-                        "destination": "token-account-1",
-                        "mint": "mint-wrong",
+                        "destination": _derive_ata(recipient, wrong_mint),
+                        "mint": wrong_mint,
                         "tokenAmount": {"amount": "1000"},
                     },
                 },
@@ -348,49 +361,41 @@ class TestParsedTransferVerification:
         ]
 
         with pytest.raises(PaymentError, match="no matching token transfer"):
-            _verify_parsed_spl_transfers(
-                instructions,
-                request,
-                details,
-                lambda _: {"owner": "recipient-1", "mint": "mint-wrong"},
-            )
+            _verify_parsed_spl_transfers(instructions, request, details)
 
     def test_spl_verifier_matches_same_recipient_by_amount(self):
-        request = ChargeRequest(amount="1000", currency="mint-1", recipient="recipient-1")
+        recipient = "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY"
+        mint = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+        primary_ata = _derive_ata(recipient, mint)
+        # Same recipient for split — same ATA
+        request = ChargeRequest(amount="1000", currency=mint, recipient=recipient)
         details = MethodDetails(
-            token_program="TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
-            splits=[Split(recipient="recipient-1", amount="200")],
+            token_program=TOKEN_PROGRAM,
+            splits=[Split(recipient=recipient, amount="200")],
         )
         instructions = [
             {
-                "programId": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+                "programId": TOKEN_PROGRAM,
                 "parsed": {
                     "type": "transferChecked",
                     "info": {
-                        "destination": "token-account-primary",
-                        "mint": "mint-1",
+                        "destination": primary_ata,
+                        "mint": mint,
                         "tokenAmount": {"amount": "800"},
                     },
                 },
             },
             {
-                "programId": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+                "programId": TOKEN_PROGRAM,
                 "parsed": {
                     "type": "transferChecked",
                     "info": {
-                        "destination": "token-account-split",
-                        "mint": "mint-1",
+                        "destination": primary_ata,
+                        "mint": mint,
                         "tokenAmount": {"amount": "200"},
                     },
                 },
             },
         ]
 
-        def fetch_token_account(address: str):
-            if address == "token-account-primary":
-                return {"owner": "recipient-1", "mint": "mint-1"}
-            if address == "token-account-split":
-                return {"owner": "recipient-1", "mint": "mint-1"}
-            return None
-
-        _verify_parsed_spl_transfers(instructions, request, details, fetch_token_account)
+        _verify_parsed_spl_transfers(instructions, request, details)

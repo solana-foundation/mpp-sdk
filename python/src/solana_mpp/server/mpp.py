@@ -71,11 +71,7 @@ def _verify_parsed_spl_transfers(
     instructions: list[dict[str, Any]],
     request: ChargeRequest,
     details: MethodDetails,
-    fetch_token_account,
 ) -> None:
-    if fetch_token_account is None:
-        raise PaymentError("fetch_token_account callback is required", code="invalid-payload-type")
-
     expected = _build_expected_transfers(request, details)
     program_id = details.token_program or "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
     mint = resolve_mint(request.currency, details.network)
@@ -94,10 +90,11 @@ def _verify_parsed_spl_transfers(
                 if ((transfer.get("parsed") or {}).get("info") or {}).get("mint") == mint
                 and str((((transfer.get("parsed") or {}).get("info") or {}).get("tokenAmount") or {}).get("amount"))
                 == str(amount)
-                and _token_account_matches(
-                    fetch_token_account(((transfer.get("parsed") or {}).get("info") or {}).get("destination")),
+                and _verify_ata_owner(
+                    ((transfer.get("parsed") or {}).get("info") or {}).get("destination", ""),
                     recipient,
                     mint,
+                    program_id,
                 )
             ),
             -1,
@@ -107,12 +104,22 @@ def _verify_parsed_spl_transfers(
         transfers.pop(match_index)
 
 
-def _token_account_matches(account: Any, recipient: str, mint: str) -> bool:
-    if not account:
+def _verify_ata_owner(ata_address: str, expected_owner: str, mint: str, token_program: str) -> bool:
+    """Verify that an ATA address belongs to the expected owner by deriving it."""
+    try:
+        from solders.pubkey import Pubkey
+
+        owner_pk = Pubkey.from_string(expected_owner)
+        mint_pk = Pubkey.from_string(mint)
+        tp_pk = Pubkey.from_string(token_program)
+        ata_program = Pubkey.from_string("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL")
+        expected_ata, _bump = Pubkey.find_program_address(
+            [bytes(owner_pk), bytes(tp_pk), bytes(mint_pk)],
+            ata_program,
+        )
+        return str(expected_ata) == ata_address
+    except Exception:
         return False
-    owner = account.get("owner") if isinstance(account, dict) else getattr(account, "owner", None)
-    account_mint = account.get("mint") if isinstance(account, dict) else getattr(account, "mint", None)
-    return owner == recipient and account_mint == mint
 
 
 def _rpc_value(response: Any) -> Any:
@@ -124,8 +131,12 @@ def _rpc_value(response: Any) -> Any:
 
 
 def _json_like(value: Any) -> Any:
-    if isinstance(value, (dict, list, str, int, float, bool)) or value is None:
+    if isinstance(value, (str, int, float, bool)) or value is None:
         return value
+    if isinstance(value, dict):
+        return {k: _json_like(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_json_like(item) for item in value]
     if hasattr(value, "to_json"):
         return json.loads(value.to_json())
     if hasattr(value, "__dict__"):
@@ -447,9 +458,4 @@ class Mpp:
         if is_native_sol(request.currency):
             _verify_parsed_sol_transfers(instructions, request, details)
         else:
-            _verify_parsed_spl_transfers(
-                instructions,
-                request,
-                details,
-                getattr(self._rpc, "get_token_account", None),
-            )
+            _verify_parsed_spl_transfers(instructions, request, details)

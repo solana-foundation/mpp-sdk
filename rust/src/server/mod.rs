@@ -547,8 +547,7 @@ impl Mpp {
 
             // Best-effort balance diagnostics: check payer USDC + fee payer SOL
             // to surface "insufficient funds" clearly instead of opaque 0x1.
-            let balance_detail =
-                diagnose_balances(&self.rpc, &tx, request, method_details);
+            let balance_detail = diagnose_balances(&self.rpc, &tx, request, method_details);
 
             return Err(VerificationError::transaction_failed(format!(
                 "Simulation failed: {err}{log_detail}{balance_detail}"
@@ -1143,14 +1142,11 @@ fn diagnose_balances(
     // Check payer's token balance.
     if let Some(payer) = payer_pk {
         if request.currency.to_uppercase() != "SOL" {
-            if let Ok(mint) = resolve_expected_mint(
-                &request.currency,
-                method_details.network.as_deref(),
-            ) {
-                let token_program =
-                    Pubkey::from_str(programs::TOKEN_PROGRAM).unwrap();
-                let ata_program =
-                    Pubkey::from_str(programs::ASSOCIATED_TOKEN_PROGRAM).unwrap();
+            if let Ok(mint) =
+                resolve_expected_mint(&request.currency, method_details.network.as_deref())
+            {
+                let token_program = Pubkey::from_str(programs::TOKEN_PROGRAM).unwrap();
+                let ata_program = Pubkey::from_str(programs::ASSOCIATED_TOKEN_PROGRAM).unwrap();
                 let (ata, _) = Pubkey::find_program_address(
                     &[payer.as_ref(), token_program.as_ref(), mint.as_ref()],
                     &ata_program,
@@ -1160,8 +1156,7 @@ fn diagnose_balances(
                 let needed = request.amount.parse::<u64>().unwrap_or(0) as f64 / divisor;
                 match rpc.get_token_account_balance(&ata) {
                     Ok(bal) => {
-                        let actual: f64 =
-                            bal.ui_amount.unwrap_or(0.0);
+                        let actual: f64 = bal.ui_amount.unwrap_or(0.0);
                         if actual < needed {
                             parts.push(format!(
                                 "payer {} balance: {:.2} (need {:.2})",
@@ -2574,7 +2569,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn replay_protection_marks_and_detects_consumed() {
         let store = Arc::new(MemoryStore::new());
-        let mpp = Mpp::new(Config {
+        let _mpp = Mpp::new(Config {
             recipient: TEST_RECIPIENT.to_string(),
             secret_key: Some(TEST_SECRET.to_string()),
             store: Some(store.clone()),

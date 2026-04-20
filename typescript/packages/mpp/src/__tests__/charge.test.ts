@@ -832,7 +832,13 @@ test('splits: SOL verification fails when split amount is wrong', async () => {
 test('splits: SOL verification matches distinct same-recipient transfers by amount', async () => {
     const duplicateRecipient = PLATFORM;
     const splits = [{ recipient: duplicateRecipient, amount: '50000' }];
-    const method = charge({ recipient: duplicateRecipient, network: 'devnet', rpcUrl: 'https://mock-rpc', store, splits });
+    const method = charge({
+        recipient: duplicateRecipient,
+        network: 'devnet',
+        rpcUrl: 'https://mock-rpc',
+        store,
+        splits,
+    });
 
     globalThis.fetch = async () =>
         rpcSuccess({

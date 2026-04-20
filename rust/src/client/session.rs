@@ -157,7 +157,12 @@ impl ActiveSession {
     ///   token account pubkey as the channel ID so vouchers bind to it).
     /// - `owner` is the client's wallet pubkey (base58). The operator uses this
     ///   to derive the MultiDelegate PDA at settlement time.
-    pub fn open_pull_action(&self, approved_amount: u64, owner: &str, approve_tx_signature: &str) -> SessionAction {
+    pub fn open_pull_action(
+        &self,
+        approved_amount: u64,
+        owner: &str,
+        approve_tx_signature: &str,
+    ) -> SessionAction {
         SessionAction::Open(OpenPayload::pull(
             self.channel_id_str(), // token_account used as the session identifier
             approved_amount.to_string(),

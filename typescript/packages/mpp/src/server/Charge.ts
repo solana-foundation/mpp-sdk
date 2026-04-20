@@ -381,11 +381,7 @@ async function verifySplTransfer(
 
     const index = transfers.findIndex(ix => {
         const info = ix.parsed!.info as { destination: string; mint: string; tokenAmount: { amount: string } };
-        return (
-            info.destination === expectedAta &&
-            info.mint === spl &&
-            info.tokenAmount.amount === expectedAmount
-        );
+        return info.destination === expectedAta && info.mint === spl && info.tokenAmount.amount === expectedAmount;
     });
 
     if (index === -1) {

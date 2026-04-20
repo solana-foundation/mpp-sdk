@@ -23,11 +23,11 @@
 use solana_pubkey::Pubkey;
 
 use crate::error::{Error, Result};
+use crate::protocol::core::base64url_decode;
 use crate::protocol::intents::session::{
     ClosePayload, OpenPayload, SessionMode, SessionRequest, SessionSplit, SignedVoucher,
     TopUpPayload, VoucherPayload,
 };
-use crate::protocol::core::base64url_decode;
 use crate::store::{ChannelState, ChannelStore, StoreError};
 
 // ── Configuration ──
@@ -162,9 +162,10 @@ impl<S: ChannelStore> SessionServer<S> {
                     amount: s.amount.to_string(),
                 })
                 .collect(),
-            program_id: self.config.program_id.map(|p| {
-                bs58::encode(p.as_ref()).into_string()
-            }),
+            program_id: self
+                .config
+                .program_id
+                .map(|p| bs58::encode(p.as_ref()).into_string()),
             description: None,
             external_id: None,
             min_voucher_delta: if self.config.min_voucher_delta > 0 {
@@ -195,7 +196,9 @@ impl<S: ChannelStore> SessionServer<S> {
         let deposit = payload.deposit_amount()?;
 
         if deposit == 0 {
-            return Err(Error::Other("Deposit must be greater than zero".to_string()));
+            return Err(Error::Other(
+                "Deposit must be greater than zero".to_string(),
+            ));
         }
 
         if deposit > self.config.max_cap {
@@ -328,9 +331,8 @@ impl<S: ChannelStore> SessionServer<S> {
             .update_channel(
                 channel_id,
                 Box::new(move |state_opt| {
-                    let state = state_opt.ok_or_else(|| {
-                        StoreError::Internal("Channel not found".to_string())
-                    })?;
+                    let state = state_opt
+                        .ok_or_else(|| StoreError::Internal("Channel not found".to_string()))?;
                     // Re-check finalized inside closure
                     if state.finalized {
                         return Err(StoreError::Internal(
@@ -384,9 +386,8 @@ impl<S: ChannelStore> SessionServer<S> {
             .update_channel(
                 &payload.channel_id,
                 Box::new(move |state_opt| {
-                    let state = state_opt.ok_or_else(|| {
-                        StoreError::Internal(format!("Channel {cid} not found"))
-                    })?;
+                    let state = state_opt
+                        .ok_or_else(|| StoreError::Internal(format!("Channel {cid} not found")))?;
                     if new_deposit <= state.deposit {
                         return Err(StoreError::Internal(format!(
                             "New deposit {new_deposit} must exceed current deposit {}",
@@ -398,7 +399,10 @@ impl<S: ChannelStore> SessionServer<S> {
                             "New deposit {new_deposit} exceeds max cap {max_cap}"
                         )));
                     }
-                    Ok(ChannelState { deposit: new_deposit, ..state })
+                    Ok(ChannelState {
+                        deposit: new_deposit,
+                        ..state
+                    })
                 }),
             )
             .await
@@ -496,8 +500,7 @@ impl<S: ChannelStore> SessionServer<S> {
             .map(|s| Ok((s.recipient, s.amount)))
             .collect::<Result<Vec<_>>>()?;
 
-        let distribution_hash =
-            compute_distribution_hash(&recipient_pubkey, &splits_with_pubkeys);
+        let distribution_hash = compute_distribution_hash(&recipient_pubkey, &splits_with_pubkeys);
 
         Ok(FinalizeParams {
             channel_id: channel_pubkey,
@@ -594,10 +597,7 @@ fn verify_signature(voucher: &SignedVoucher, authorized_signer: &str) -> Result<
 /// Matches the Fiber SDK's `distribution_hash(recipient, splits)`:
 /// Blake3 over `(recipient_bytes || split_recipient_bytes || split_amount_le)*`,
 /// truncated to 128 bits.
-pub fn compute_distribution_hash(
-    recipient: &Pubkey,
-    splits: &[(Pubkey, u64)],
-) -> [u8; 16] {
+pub fn compute_distribution_hash(recipient: &Pubkey, splits: &[(Pubkey, u64)]) -> [u8; 16] {
     let mut hasher = blake3::Hasher::new();
     hasher.update(recipient.as_ref());
     for (split_recipient, amount) in splits {
@@ -613,7 +613,9 @@ pub fn compute_distribution_hash(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::protocol::intents::session::{ClosePayload, OpenPayload, SessionMode, VoucherData, VoucherPayload};
+    use crate::protocol::intents::session::{
+        ClosePayload, OpenPayload, SessionMode, VoucherData, VoucherPayload,
+    };
     use crate::store::MemoryChannelStore;
 
     const RECIPIENT: &str = "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY";
@@ -768,7 +770,10 @@ mod tests {
         let config = SessionConfig {
             operator: RECIPIENT.to_string(),
             recipient: RECIPIENT.to_string(),
-            splits: vec![Split { recipient: split_pk, amount: 100_000 }],
+            splits: vec![Split {
+                recipient: split_pk,
+                amount: 100_000,
+            }],
             max_cap: 10_000_000,
             currency: "USDC".to_string(),
             decimals: 6,
@@ -878,12 +883,23 @@ mod tests {
 
         // First voucher succeeds
         let v1 = session.sign_increment(500_000).await.unwrap();
-        server.verify_voucher(&VoucherPayload { voucher: v1.clone() }).await.unwrap();
+        server
+            .verify_voucher(&VoucherPayload {
+                voucher: v1.clone(),
+            })
+            .await
+            .unwrap();
 
         // Idempotent replay of exact same voucher (same cumulative + same signature) succeeds
         let v1_replay = v1.clone();
-        let replay_result = server.verify_voucher(&VoucherPayload { voucher: v1_replay }).await;
-        assert_eq!(replay_result.unwrap(), 500_000, "Idempotent replay should return same cumulative");
+        let replay_result = server
+            .verify_voucher(&VoucherPayload { voucher: v1_replay })
+            .await;
+        assert_eq!(
+            replay_result.unwrap(),
+            500_000,
+            "Idempotent replay should return same cumulative"
+        );
 
         // Next voucher with higher cumulative succeeds
         let v2 = session.sign_increment(500_000).await.unwrap();
@@ -894,10 +910,17 @@ mod tests {
     #[tokio::test]
     async fn verify_voucher_stale_cumulative_rejected() {
         let server = make_server();
-        server.process_open(&open_payload("chan1", 5_000_000, "signer1")).await.unwrap();
+        server
+            .process_open(&open_payload("chan1", 5_000_000, "signer1"))
+            .await
+            .unwrap();
 
         // Manually advance watermark via store
-        server.store.advance_cumulative("chan1", 0, 500_000).await.unwrap();
+        server
+            .store
+            .advance_cumulative("chan1", 0, 500_000)
+            .await
+            .unwrap();
 
         let voucher = SignedVoucher {
             data: VoucherData {
@@ -915,7 +938,10 @@ mod tests {
     #[tokio::test]
     async fn verify_voucher_exceeds_deposit_rejected() {
         let server = make_server();
-        server.process_open(&open_payload("chan1", 1_000_000, "signer1")).await.unwrap();
+        server
+            .process_open(&open_payload("chan1", 1_000_000, "signer1"))
+            .await
+            .unwrap();
 
         let voucher = SignedVoucher {
             data: VoucherData {
@@ -933,7 +959,10 @@ mod tests {
     #[tokio::test]
     async fn verify_voucher_bad_cumulative_format_rejected() {
         let server = make_server();
-        server.process_open(&open_payload("chan1", 1_000_000, "signer1")).await.unwrap();
+        server
+            .process_open(&open_payload("chan1", 1_000_000, "signer1"))
+            .await
+            .unwrap();
 
         let voucher = SignedVoucher {
             data: VoucherData {
@@ -943,7 +972,10 @@ mod tests {
             },
             signature: "AAAA".to_string(),
         };
-        assert!(server.verify_voucher(&VoucherPayload { voucher }).await.is_err());
+        assert!(server
+            .verify_voucher(&VoucherPayload { voucher })
+            .await
+            .is_err());
     }
 
     #[cfg(feature = "client")]
@@ -960,13 +992,19 @@ mod tests {
         // Tamper with the signature
         voucher.signature = crate::protocol::core::base64url_encode(&[0u8; 64]);
 
-        assert!(server.verify_voucher(&VoucherPayload { voucher }).await.is_err());
+        assert!(server
+            .verify_voucher(&VoucherPayload { voucher })
+            .await
+            .is_err());
     }
 
     #[tokio::test]
     async fn verify_voucher_on_finalized_channel_rejected() {
         let server = make_server();
-        server.process_open(&open_payload("chan1", 1_000_000, "signer1")).await.unwrap();
+        server
+            .process_open(&open_payload("chan1", 1_000_000, "signer1"))
+            .await
+            .unwrap();
         server.mark_finalized("chan1").await.unwrap();
 
         let voucher = SignedVoucher {
@@ -988,7 +1026,10 @@ mod tests {
     async fn process_topup_valid() {
         let server = make_server();
         let chan = "chan1";
-        server.process_open(&open_payload(chan, 1_000_000, "s")).await.unwrap();
+        server
+            .process_open(&open_payload(chan, 1_000_000, "s"))
+            .await
+            .unwrap();
 
         let state = server
             .process_topup(&TopUpPayload {
@@ -1005,7 +1046,10 @@ mod tests {
     async fn process_topup_lower_deposit_rejected() {
         let server = make_server();
         let chan = "chan1";
-        server.process_open(&open_payload(chan, 3_000_000, "s")).await.unwrap();
+        server
+            .process_open(&open_payload(chan, 3_000_000, "s"))
+            .await
+            .unwrap();
 
         assert!(server
             .process_topup(&TopUpPayload {
@@ -1021,7 +1065,10 @@ mod tests {
     async fn process_topup_exceeds_cap_rejected() {
         let server = make_server();
         let chan = "chan1";
-        server.process_open(&open_payload(chan, 1_000_000, "s")).await.unwrap();
+        server
+            .process_open(&open_payload(chan, 1_000_000, "s"))
+            .await
+            .unwrap();
 
         assert!(server
             .process_topup(&TopUpPayload {
@@ -1037,7 +1084,10 @@ mod tests {
     async fn process_topup_bad_amount_format_rejected() {
         let server = make_server();
         let chan = "chan1";
-        server.process_open(&open_payload(chan, 1_000_000, "s")).await.unwrap();
+        server
+            .process_open(&open_payload(chan, 1_000_000, "s"))
+            .await
+            .unwrap();
 
         assert!(server
             .process_topup(&TopUpPayload {
@@ -1068,10 +1118,16 @@ mod tests {
     async fn process_close_no_voucher() {
         let server = make_server();
         let chan = bs58::encode(Pubkey::new_unique().as_ref()).into_string();
-        server.process_open(&open_payload(&chan, 5_000_000, "s")).await.unwrap();
+        server
+            .process_open(&open_payload(&chan, 5_000_000, "s"))
+            .await
+            .unwrap();
 
         let params = server
-            .process_close(&ClosePayload { channel_id: chan.clone(), voucher: None })
+            .process_close(&ClosePayload {
+                channel_id: chan.clone(),
+                voucher: None,
+            })
             .await
             .unwrap();
         assert_eq!(params.settled, 0);
@@ -1082,11 +1138,17 @@ mod tests {
     async fn process_close_with_voucher() {
         let server = make_server();
         let (mut session, auth_signer, chan_str, _) = make_e2e_session();
-        server.process_open(&open_payload(&chan_str, 5_000_000, &auth_signer)).await.unwrap();
+        server
+            .process_open(&open_payload(&chan_str, 5_000_000, &auth_signer))
+            .await
+            .unwrap();
 
         // Consume 500k first
         let v1 = session.sign_increment(500_000).await.unwrap();
-        server.verify_voucher(&VoucherPayload { voucher: v1 }).await.unwrap();
+        server
+            .verify_voucher(&VoucherPayload { voucher: v1 })
+            .await
+            .unwrap();
 
         // Close with a final 200k voucher
         let final_voucher = session.sign_increment(200_000).await.unwrap();
@@ -1119,7 +1181,10 @@ mod tests {
         let server = make_server();
         let channel = Pubkey::new_unique();
         let chan_str = bs58::encode(channel.as_ref()).into_string();
-        server.process_open(&open_payload(&chan_str, 5_000_000, "s")).await.unwrap();
+        server
+            .process_open(&open_payload(&chan_str, 5_000_000, "s"))
+            .await
+            .unwrap();
 
         let params = server.finalize_params(&chan_str).await.unwrap();
         assert_eq!(params.channel_id, channel);
@@ -1145,7 +1210,10 @@ mod tests {
     #[tokio::test]
     async fn mark_finalized_sets_flag() {
         let server = make_server();
-        server.process_open(&open_payload("chan1", 1_000_000, "s")).await.unwrap();
+        server
+            .process_open(&open_payload("chan1", 1_000_000, "s"))
+            .await
+            .unwrap();
         server.mark_finalized("chan1").await.unwrap();
 
         let state = server.store.get_channel("chan1").await.unwrap().unwrap();
@@ -1264,15 +1332,21 @@ mod tests {
             },
             signature: "replay_sig".to_string(),
         };
-        let err = server.verify_voucher(&VoucherPayload { voucher }).await.unwrap_err();
+        let err = server
+            .verify_voucher(&VoucherPayload { voucher })
+            .await
+            .unwrap_err();
         // Should fail at signature verification, not watermark check
         let msg = err.to_string();
         assert!(!msg.contains("watermark"), "Expected sig error, got: {msg}");
         // The error is from crypto validation (bad encoding, wrong length, bad key, etc.)
         // Any error other than "watermark" means idempotent replay path was taken correctly
         assert!(
-            msg.contains("signature") || msg.contains("encoding") || msg.contains("Invalid")
-                || msg.contains("bytes") || msg.contains("key"),
+            msg.contains("signature")
+                || msg.contains("encoding")
+                || msg.contains("Invalid")
+                || msg.contains("bytes")
+                || msg.contains("key"),
             "Expected signature-related error, got: {msg}"
         );
     }
@@ -1282,7 +1356,10 @@ mod tests {
     #[tokio::test]
     async fn verify_voucher_min_delta_enforced() {
         let server = make_server_with_min_delta(500_000);
-        server.process_open(&open_payload("chan1", 5_000_000, "signer1")).await.unwrap();
+        server
+            .process_open(&open_payload("chan1", 5_000_000, "signer1"))
+            .await
+            .unwrap();
 
         // delta = 100_000, min = 500_000 → should be rejected
         let voucher = SignedVoucher {
@@ -1293,8 +1370,14 @@ mod tests {
             },
             signature: "AAAA".to_string(),
         };
-        let err = server.verify_voucher(&VoucherPayload { voucher }).await.unwrap_err();
-        assert!(err.to_string().contains("below minimum"), "Expected min delta error, got: {err}");
+        let err = server
+            .verify_voucher(&VoucherPayload { voucher })
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("below minimum"),
+            "Expected min delta error, got: {err}"
+        );
     }
 
     // ── verify_voucher: close-pending rejection ──────────────────────────────
@@ -1303,11 +1386,17 @@ mod tests {
     async fn verify_voucher_close_pending_rejected() {
         let server = make_server();
         let chan = bs58::encode(Pubkey::new_unique().as_ref()).into_string();
-        server.process_open(&open_payload(&chan, 5_000_000, "s")).await.unwrap();
+        server
+            .process_open(&open_payload(&chan, 5_000_000, "s"))
+            .await
+            .unwrap();
 
         // Close the channel first
         server
-            .process_close(&ClosePayload { channel_id: chan.clone(), voucher: None })
+            .process_close(&ClosePayload {
+                channel_id: chan.clone(),
+                voucher: None,
+            })
             .await
             .unwrap();
 
@@ -1320,7 +1409,10 @@ mod tests {
             },
             signature: "AAAA".to_string(),
         };
-        let err = server.verify_voucher(&VoucherPayload { voucher }).await.unwrap_err();
+        let err = server
+            .verify_voucher(&VoucherPayload { voucher })
+            .await
+            .unwrap_err();
         assert!(
             err.to_string().contains("close is pending"),
             "Expected close-pending error, got: {err}"
@@ -1333,15 +1425,24 @@ mod tests {
     async fn process_close_sets_close_pending() {
         let server = make_server();
         let chan = bs58::encode(Pubkey::new_unique().as_ref()).into_string();
-        server.process_open(&open_payload(&chan, 5_000_000, "s")).await.unwrap();
+        server
+            .process_open(&open_payload(&chan, 5_000_000, "s"))
+            .await
+            .unwrap();
 
         server
-            .process_close(&ClosePayload { channel_id: chan.clone(), voucher: None })
+            .process_close(&ClosePayload {
+                channel_id: chan.clone(),
+                voucher: None,
+            })
             .await
             .unwrap();
 
         let state = server.store.get_channel(&chan).await.unwrap().unwrap();
-        assert!(state.close_requested_at.is_some(), "Expected close_requested_at to be set");
+        assert!(
+            state.close_requested_at.is_some(),
+            "Expected close_requested_at to be set"
+        );
     }
 
     // ── process_close: prevents double-close ─────────────────────────────────
@@ -1350,21 +1451,31 @@ mod tests {
     async fn process_close_prevents_double_close() {
         let server = make_server();
         let chan = bs58::encode(Pubkey::new_unique().as_ref()).into_string();
-        server.process_open(&open_payload(&chan, 5_000_000, "s")).await.unwrap();
+        server
+            .process_open(&open_payload(&chan, 5_000_000, "s"))
+            .await
+            .unwrap();
 
         // First close succeeds
         server
-            .process_close(&ClosePayload { channel_id: chan.clone(), voucher: None })
+            .process_close(&ClosePayload {
+                channel_id: chan.clone(),
+                voucher: None,
+            })
             .await
             .unwrap();
 
         // Second close should fail
         let err = server
-            .process_close(&ClosePayload { channel_id: chan.clone(), voucher: None })
+            .process_close(&ClosePayload {
+                channel_id: chan.clone(),
+                voucher: None,
+            })
             .await
             .unwrap_err();
         assert!(
-            err.to_string().contains("Close already requested") || err.to_string().contains("close"),
+            err.to_string().contains("Close already requested")
+                || err.to_string().contains("close"),
             "Expected double-close error, got: {err}"
         );
     }

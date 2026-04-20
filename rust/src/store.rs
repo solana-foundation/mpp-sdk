@@ -288,9 +288,7 @@ impl ChannelStore for MemoryChannelStore {
                 Box::pin(async { Ok(true) })
             }
             Some(_) => Box::pin(async { Ok(false) }),
-            None => Box::pin(async {
-                Err(StoreError::Internal("Channel not found".to_string()))
-            }),
+            None => Box::pin(async { Err(StoreError::Internal("Channel not found".to_string())) }),
         }
     }
 
@@ -305,9 +303,7 @@ impl ChannelStore for MemoryChannelStore {
                 state.deposit = new_deposit;
                 Box::pin(async { Ok(()) })
             }
-            None => Box::pin(async {
-                Err(StoreError::Internal("Channel not found".to_string()))
-            }),
+            None => Box::pin(async { Err(StoreError::Internal("Channel not found".to_string())) }),
         }
     }
 
@@ -321,9 +317,7 @@ impl ChannelStore for MemoryChannelStore {
                 state.finalized = true;
                 Box::pin(async { Ok(()) })
             }
-            None => Box::pin(async {
-                Err(StoreError::Internal("Channel not found".to_string()))
-            }),
+            None => Box::pin(async { Err(StoreError::Internal("Channel not found".to_string())) }),
         }
     }
 }
@@ -352,7 +346,10 @@ mod tests {
         let store = MemoryStore::new();
         let v = serde_json::json!(1);
         assert!(store.put_if_absent("k", v.clone()).await.unwrap());
-        assert!(!store.put_if_absent("k", serde_json::json!(2)).await.unwrap());
+        assert!(!store
+            .put_if_absent("k", serde_json::json!(2))
+            .await
+            .unwrap());
         // Original value unchanged
         assert_eq!(store.get("k").await.unwrap(), Some(v));
     }
@@ -377,7 +374,10 @@ mod tests {
         let store = MemoryChannelStore::new();
         assert!(store.get_channel("c1").await.unwrap().is_none());
 
-        store.put_channel("c1", make_state("c1", 1_000_000)).await.unwrap();
+        store
+            .put_channel("c1", make_state("c1", 1_000_000))
+            .await
+            .unwrap();
         let state = store.get_channel("c1").await.unwrap().unwrap();
         assert_eq!(state.deposit, 1_000_000);
         assert_eq!(state.cumulative, 0);
@@ -387,7 +387,10 @@ mod tests {
     #[tokio::test]
     async fn channel_store_advance_cumulative_success() {
         let store = MemoryChannelStore::new();
-        store.put_channel("c1", make_state("c1", 5_000_000)).await.unwrap();
+        store
+            .put_channel("c1", make_state("c1", 5_000_000))
+            .await
+            .unwrap();
 
         let advanced = store.advance_cumulative("c1", 0, 1_000_000).await.unwrap();
         assert!(advanced);
@@ -399,10 +402,16 @@ mod tests {
     #[tokio::test]
     async fn channel_store_advance_cumulative_wrong_expected_returns_false() {
         let store = MemoryChannelStore::new();
-        store.put_channel("c1", make_state("c1", 5_000_000)).await.unwrap();
+        store
+            .put_channel("c1", make_state("c1", 5_000_000))
+            .await
+            .unwrap();
 
         // Wrong expected value — simulates a lost race
-        let advanced = store.advance_cumulative("c1", 999, 1_000_000).await.unwrap();
+        let advanced = store
+            .advance_cumulative("c1", 999, 1_000_000)
+            .await
+            .unwrap();
         assert!(!advanced);
 
         // Watermark unchanged
@@ -419,7 +428,10 @@ mod tests {
     #[tokio::test]
     async fn channel_store_update_deposit_success() {
         let store = MemoryChannelStore::new();
-        store.put_channel("c1", make_state("c1", 1_000_000)).await.unwrap();
+        store
+            .put_channel("c1", make_state("c1", 1_000_000))
+            .await
+            .unwrap();
 
         store.update_deposit("c1", 5_000_000).await.unwrap();
         let state = store.get_channel("c1").await.unwrap().unwrap();
@@ -435,7 +447,10 @@ mod tests {
     #[tokio::test]
     async fn channel_store_mark_finalized_success() {
         let store = MemoryChannelStore::new();
-        store.put_channel("c1", make_state("c1", 1_000_000)).await.unwrap();
+        store
+            .put_channel("c1", make_state("c1", 1_000_000))
+            .await
+            .unwrap();
 
         store.mark_finalized("c1").await.unwrap();
         let state = store.get_channel("c1").await.unwrap().unwrap();
@@ -451,7 +466,10 @@ mod tests {
     #[tokio::test]
     async fn channel_store_put_overwrites_existing() {
         let store = MemoryChannelStore::new();
-        store.put_channel("c1", make_state("c1", 1_000_000)).await.unwrap();
+        store
+            .put_channel("c1", make_state("c1", 1_000_000))
+            .await
+            .unwrap();
         let mut updated = make_state("c1", 5_000_000);
         updated.cumulative = 999;
         store.put_channel("c1", updated).await.unwrap();
@@ -493,14 +511,20 @@ mod tests {
     #[tokio::test]
     async fn channel_store_update_channel_modifies_existing() {
         let store = MemoryChannelStore::new();
-        store.put_channel("c1", make_state("c1", 1_000_000)).await.unwrap();
+        store
+            .put_channel("c1", make_state("c1", 1_000_000))
+            .await
+            .unwrap();
 
         let state = store
             .update_channel(
                 "c1",
                 Box::new(|state_opt| {
                     let s = state_opt.unwrap();
-                    Ok(ChannelState { cumulative: 500_000, ..s })
+                    Ok(ChannelState {
+                        cumulative: 500_000,
+                        ..s
+                    })
                 }),
             )
             .await
@@ -513,7 +537,10 @@ mod tests {
     #[tokio::test]
     async fn channel_store_update_channel_error_aborts() {
         let store = MemoryChannelStore::new();
-        store.put_channel("c1", make_state("c1", 1_000_000)).await.unwrap();
+        store
+            .put_channel("c1", make_state("c1", 1_000_000))
+            .await
+            .unwrap();
 
         let result = store
             .update_channel(
@@ -531,7 +558,10 @@ mod tests {
     #[tokio::test]
     async fn channel_store_update_channel_atomicity() {
         let store = MemoryChannelStore::new();
-        store.put_channel("c1", make_state("c1", 1_000_000)).await.unwrap();
+        store
+            .put_channel("c1", make_state("c1", 1_000_000))
+            .await
+            .unwrap();
 
         // First update
         store
@@ -539,7 +569,10 @@ mod tests {
                 "c1",
                 Box::new(|state_opt| {
                     let s = state_opt.unwrap();
-                    Ok(ChannelState { cumulative: 100_000, ..s })
+                    Ok(ChannelState {
+                        cumulative: 100_000,
+                        ..s
+                    })
                 }),
             )
             .await
@@ -552,7 +585,10 @@ mod tests {
                 Box::new(|state_opt| {
                     let s = state_opt.unwrap();
                     assert_eq!(s.cumulative, 100_000);
-                    Ok(ChannelState { cumulative: 200_000, ..s })
+                    Ok(ChannelState {
+                        cumulative: 200_000,
+                        ..s
+                    })
                 }),
             )
             .await

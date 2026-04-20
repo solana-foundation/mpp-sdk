@@ -450,13 +450,15 @@ mod tests {
 
     #[test]
     fn display_missing_init_mentions_init_tx() {
-        let s = MultiDelegateSetupAction::MissingPayload(MissingPayloadReason::NoInitTx).to_string();
+        let s =
+            MultiDelegateSetupAction::MissingPayload(MissingPayloadReason::NoInitTx).to_string();
         assert!(s.contains("initMultiDelegateTx"), "got: {s}");
     }
 
     #[test]
     fn display_missing_update_mentions_update_tx() {
-        let s = MultiDelegateSetupAction::MissingPayload(MissingPayloadReason::NoUpdateTx).to_string();
+        let s =
+            MultiDelegateSetupAction::MissingPayload(MissingPayloadReason::NoUpdateTx).to_string();
         assert!(s.contains("updateDelegationTx"), "got: {s}");
     }
 }

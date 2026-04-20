@@ -818,8 +818,7 @@ mod tests {
             ..Default::default()
         };
         let err =
-            build_charge_transaction(signer.as_ref(), &rpc, "1000000", "SOL", RECIPIENT, &md)
-                .await;
+            build_charge_transaction(signer.as_ref(), &rpc, "1000000", "SOL", RECIPIENT, &md).await;
         assert!(matches!(err, Err(crate::Error::TooManySplits)));
     }
 
@@ -838,8 +837,7 @@ mod tests {
             ..Default::default()
         };
         let err =
-            build_charge_transaction(signer.as_ref(), &rpc, "1000000", "SOL", RECIPIENT, &md)
-                .await;
+            build_charge_transaction(signer.as_ref(), &rpc, "1000000", "SOL", RECIPIENT, &md).await;
         assert!(matches!(err, Err(crate::Error::SplitsExceedAmount)));
     }
 
@@ -875,8 +873,7 @@ mod tests {
             ..Default::default()
         };
         let err =
-            build_charge_transaction(signer.as_ref(), &rpc, "1000000", "SOL", RECIPIENT, &md)
-                .await;
+            build_charge_transaction(signer.as_ref(), &rpc, "1000000", "SOL", RECIPIENT, &md).await;
         assert!(err.is_err());
         assert!(format!("{}", err.unwrap_err()).contains("Invalid fee payer"));
     }
@@ -890,8 +887,7 @@ mod tests {
             ..Default::default()
         };
         let err =
-            build_charge_transaction(signer.as_ref(), &rpc, "1000000", "SOL", RECIPIENT, &md)
-                .await;
+            build_charge_transaction(signer.as_ref(), &rpc, "1000000", "SOL", RECIPIENT, &md).await;
         assert!(err.is_err());
         assert!(format!("{}", err.unwrap_err()).contains("Invalid blockhash"));
     }
@@ -1006,7 +1002,15 @@ mod tests {
         };
         let mut ixs = vec![];
         build_spl_instructions(
-            &mut ixs, &signer_pk, &recipient, &rpc, USDC_MINT, &md, 1_000_000, &[], None,
+            &mut ixs,
+            &signer_pk,
+            &recipient,
+            &rpc,
+            USDC_MINT,
+            &md,
+            1_000_000,
+            &[],
+            None,
         )
         .unwrap();
         // create_ata + transfer_checked

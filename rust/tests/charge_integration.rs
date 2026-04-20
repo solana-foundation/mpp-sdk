@@ -41,7 +41,7 @@ async fn wait_for_surfnet(surfnet: &Surfnet) {
 
 // ─── SOL charge flow ───────────────────────────────────────────────────
 
-#[tokio::test(flavor = "current_thread")]
+#[tokio::test(flavor = "multi_thread")]
 #[serial_test::serial]
 async fn sol_charge_full_flow() {
     let recipient = Keypair::new();
@@ -86,7 +86,7 @@ async fn sol_charge_full_flow() {
     assert!(!receipt.reference.is_empty());
 }
 
-#[tokio::test(flavor = "current_thread")]
+#[tokio::test(flavor = "multi_thread")]
 #[serial_test::serial]
 async fn sol_charge_wrong_amount_rejected_before_broadcast() {
     let recipient = Keypair::new();
@@ -155,7 +155,7 @@ async fn sol_charge_wrong_amount_rejected_before_broadcast() {
     );
 }
 
-#[tokio::test(flavor = "current_thread")]
+#[tokio::test(flavor = "multi_thread")]
 #[serial_test::serial]
 async fn sol_charge_wrong_recipient_rejected_before_broadcast() {
     let real_recipient = Keypair::new();
@@ -219,7 +219,7 @@ async fn sol_charge_wrong_recipient_rejected_before_broadcast() {
     );
 }
 
-#[tokio::test(flavor = "current_thread")]
+#[tokio::test(flavor = "multi_thread")]
 #[serial_test::serial]
 async fn sol_charge_replay_rejected() {
     let recipient = Keypair::new();
@@ -270,7 +270,7 @@ async fn sol_charge_replay_rejected() {
     );
 }
 
-#[tokio::test(flavor = "current_thread")]
+#[tokio::test(flavor = "multi_thread")]
 #[serial_test::serial]
 async fn sol_charge_expired_challenge_rejected() {
     let recipient = Keypair::new();
@@ -321,7 +321,7 @@ async fn sol_charge_expired_challenge_rejected() {
     );
 }
 
-#[tokio::test(flavor = "current_thread")]
+#[tokio::test(flavor = "multi_thread")]
 #[serial_test::serial]
 async fn sol_charge_www_authenticate_roundtrip() {
     let recipient = Keypair::new();
@@ -369,7 +369,7 @@ async fn sol_charge_www_authenticate_roundtrip() {
 
 // ─── USDC charge flow ──────────────────────────────────────────────────
 
-#[tokio::test(flavor = "current_thread")]
+#[tokio::test(flavor = "multi_thread")]
 #[serial_test::serial]
 async fn usdc_charge_full_flow() {
     let recipient = Keypair::new();
@@ -453,7 +453,7 @@ async fn usdc_charge_full_flow() {
     assert_eq!(amount, 1_000_000, "Recipient should have 1 USDC");
 }
 
-#[tokio::test(flavor = "current_thread")]
+#[tokio::test(flavor = "multi_thread")]
 #[serial_test::serial]
 async fn usdc_charge_wrong_amount_no_broadcast() {
     let recipient = Keypair::new();
