@@ -42,9 +42,11 @@ bs58 = "0.5"
 base64 = "0.22"
 bincode = "1"
 
-# Crypto (HMAC challenge IDs)
+# Crypto (HMAC challenge IDs + distribution hash + voucher verification)
 hmac = "0.12"
 sha2 = "0.10"
+blake3 = "1"
+ed25519-dalek = { version = "2", default-features = false, features = ["alloc"] }
 
 # Time (expiration, timestamps)
 time = { version = "0.3", features = ["formatting", "parsing"] }

@@ -1,8 +1,13 @@
 //! Intent-specific request types.
 
 mod charge;
+pub mod session;
 
 pub use charge::ChargeRequest;
+pub use session::{
+    ClosePayload, OpenPayload, SessionAction, SessionMode, SessionRequest, SessionSplit,
+    SignedVoucher, TopUpPayload, VoucherData, VoucherPayload,
+};
 
 /// Convert a human-readable amount to base units.
 ///

@@ -32,6 +32,7 @@
 
 pub mod error;
 pub mod expires;
+pub mod program;
 pub mod protocol;
 pub mod store;
 
@@ -60,10 +61,13 @@ pub use protocol::core::{
 };
 
 // Intent types
-pub use protocol::intents::{parse_units, ChargeRequest};
+pub use protocol::intents::{
+    parse_units, ChargeRequest, ClosePayload, OpenPayload, SessionAction, SessionMode,
+    SessionRequest, SessionSplit, SignedVoucher, TopUpPayload, VoucherData, VoucherPayload,
+};
 
 // Store types
-pub use store::{MemoryStore, Store, StoreError};
+pub use store::{ChannelState, ChannelStore, MemoryChannelStore, MemoryStore, Store, StoreError};
 
 // Re-export crates callers need to use with the charge builder.
 pub use solana_keychain;

@@ -705,4 +705,525 @@ mod tests {
         let err = parse_challenge("Payment id=\"abc\"");
         assert!(err.is_err());
     }
+
+    // ── Helpers for async/RPC-bypass tests ──
+
+    fn make_signer() -> Box<dyn SolanaSigner> {
+        let sk = ed25519_dalek::SigningKey::from_bytes(&[42u8; 32]);
+        let mut kp = [0u8; 64];
+        kp[..32].copy_from_slice(sk.as_bytes());
+        kp[32..].copy_from_slice(sk.verifying_key().as_bytes());
+        Box::new(solana_keychain::MemorySigner::from_bytes(&kp).expect("valid keypair"))
+    }
+
+    fn dummy_rpc() -> RpcClient {
+        // Never actually contacted — tests bypass RPC via method_details overrides.
+        RpcClient::new("http://localhost:1".to_string())
+    }
+
+    /// 32 zero bytes in base58 — same as the system program address and a valid Hash.
+    const ZERO_HASH: &str = "11111111111111111111111111111111";
+    const RECIPIENT: &str = "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY";
+    const USDC_MINT: &str = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
+
+    // ── build_charge_transaction: SOL happy paths ──
+
+    #[tokio::test]
+    async fn build_charge_sol_no_splits() {
+        let signer = make_signer();
+        let rpc = dummy_rpc();
+        let md = MethodDetails {
+            recent_blockhash: Some(ZERO_HASH.to_string()),
+            ..Default::default()
+        };
+        let payload =
+            build_charge_transaction(signer.as_ref(), &rpc, "1000000", "SOL", RECIPIENT, &md)
+                .await
+                .unwrap();
+        assert!(matches!(payload, CredentialPayload::Transaction { .. }));
+    }
+
+    #[tokio::test]
+    async fn build_charge_sol_with_splits() {
+        let signer = make_signer();
+        let rpc = dummy_rpc();
+        let split_addr = Pubkey::new_unique().to_string();
+        let md = MethodDetails {
+            recent_blockhash: Some(ZERO_HASH.to_string()),
+            splits: Some(vec![Split {
+                recipient: split_addr,
+                amount: "1000".to_string(),
+                label: None,
+                memo: None,
+            }]),
+            ..Default::default()
+        };
+        let payload =
+            build_charge_transaction(signer.as_ref(), &rpc, "5000000", "SOL", RECIPIENT, &md)
+                .await
+                .unwrap();
+        assert!(matches!(payload, CredentialPayload::Transaction { .. }));
+    }
+
+    #[tokio::test]
+    async fn build_charge_sol_with_fee_payer() {
+        let signer = make_signer();
+        let rpc = dummy_rpc();
+        let fee_payer = Pubkey::new_unique();
+        let md = MethodDetails {
+            recent_blockhash: Some(ZERO_HASH.to_string()),
+            fee_payer: Some(true),
+            fee_payer_key: Some(fee_payer.to_string()),
+            ..Default::default()
+        };
+        let payload =
+            build_charge_transaction(signer.as_ref(), &rpc, "1000000", "SOL", RECIPIENT, &md)
+                .await
+                .unwrap();
+        assert!(matches!(payload, CredentialPayload::Transaction { .. }));
+    }
+
+    // ── build_charge_transaction: error cases ──
+
+    #[tokio::test]
+    async fn build_charge_invalid_amount() {
+        let signer = make_signer();
+        let rpc = dummy_rpc();
+        let md = MethodDetails {
+            recent_blockhash: Some(ZERO_HASH.to_string()),
+            ..Default::default()
+        };
+        let err =
+            build_charge_transaction(signer.as_ref(), &rpc, "not-a-number", "SOL", RECIPIENT, &md)
+                .await;
+        assert!(err.is_err());
+        assert!(format!("{}", err.unwrap_err()).contains("Invalid amount"));
+    }
+
+    #[tokio::test]
+    async fn build_charge_too_many_splits() {
+        let signer = make_signer();
+        let rpc = dummy_rpc();
+        let splits: Vec<Split> = (0..9)
+            .map(|_| Split {
+                recipient: Pubkey::new_unique().to_string(),
+                amount: "100".to_string(),
+                label: None,
+                memo: None,
+            })
+            .collect();
+        let md = MethodDetails {
+            recent_blockhash: Some(ZERO_HASH.to_string()),
+            splits: Some(splits),
+            ..Default::default()
+        };
+        let err =
+            build_charge_transaction(signer.as_ref(), &rpc, "1000000", "SOL", RECIPIENT, &md)
+                .await;
+        assert!(matches!(err, Err(crate::Error::TooManySplits)));
+    }
+
+    #[tokio::test]
+    async fn build_charge_splits_exceed_amount() {
+        let signer = make_signer();
+        let rpc = dummy_rpc();
+        let md = MethodDetails {
+            recent_blockhash: Some(ZERO_HASH.to_string()),
+            splits: Some(vec![Split {
+                recipient: Pubkey::new_unique().to_string(),
+                amount: "1000000".to_string(), // equals total → primary_amount = 0
+                label: None,
+                memo: None,
+            }]),
+            ..Default::default()
+        };
+        let err =
+            build_charge_transaction(signer.as_ref(), &rpc, "1000000", "SOL", RECIPIENT, &md)
+                .await;
+        assert!(matches!(err, Err(crate::Error::SplitsExceedAmount)));
+    }
+
+    #[tokio::test]
+    async fn build_charge_invalid_recipient() {
+        let signer = make_signer();
+        let rpc = dummy_rpc();
+        let md = MethodDetails {
+            recent_blockhash: Some(ZERO_HASH.to_string()),
+            ..Default::default()
+        };
+        let err = build_charge_transaction(
+            signer.as_ref(),
+            &rpc,
+            "1000000",
+            "SOL",
+            "not-a-pubkey!!!",
+            &md,
+        )
+        .await;
+        assert!(err.is_err());
+        assert!(format!("{}", err.unwrap_err()).contains("Invalid recipient"));
+    }
+
+    #[tokio::test]
+    async fn build_charge_invalid_fee_payer_key() {
+        let signer = make_signer();
+        let rpc = dummy_rpc();
+        let md = MethodDetails {
+            recent_blockhash: Some(ZERO_HASH.to_string()),
+            fee_payer: Some(true),
+            fee_payer_key: Some("not-a-valid-key!!!".to_string()),
+            ..Default::default()
+        };
+        let err =
+            build_charge_transaction(signer.as_ref(), &rpc, "1000000", "SOL", RECIPIENT, &md)
+                .await;
+        assert!(err.is_err());
+        assert!(format!("{}", err.unwrap_err()).contains("Invalid fee payer"));
+    }
+
+    #[tokio::test]
+    async fn build_charge_invalid_blockhash() {
+        let signer = make_signer();
+        let rpc = dummy_rpc();
+        let md = MethodDetails {
+            recent_blockhash: Some("not-a-valid-hash!!!".to_string()),
+            ..Default::default()
+        };
+        let err =
+            build_charge_transaction(signer.as_ref(), &rpc, "1000000", "SOL", RECIPIENT, &md)
+                .await;
+        assert!(err.is_err());
+        assert!(format!("{}", err.unwrap_err()).contains("Invalid blockhash"));
+    }
+
+    // ── build_charge_transaction: SPL path ──
+
+    #[tokio::test]
+    async fn build_charge_spl_no_splits() {
+        let signer = make_signer();
+        let rpc = dummy_rpc();
+        let md = MethodDetails {
+            recent_blockhash: Some(ZERO_HASH.to_string()),
+            token_program: Some(programs::TOKEN_PROGRAM.to_string()),
+            decimals: Some(6),
+            ..Default::default()
+        };
+        let payload =
+            build_charge_transaction(signer.as_ref(), &rpc, "1000000", "USDC", RECIPIENT, &md)
+                .await
+                .unwrap();
+        assert!(matches!(payload, CredentialPayload::Transaction { .. }));
+    }
+
+    #[tokio::test]
+    async fn build_charge_spl_with_splits() {
+        let signer = make_signer();
+        let rpc = dummy_rpc();
+        let split_addr = Pubkey::new_unique().to_string();
+        let md = MethodDetails {
+            recent_blockhash: Some(ZERO_HASH.to_string()),
+            token_program: Some(programs::TOKEN_PROGRAM.to_string()),
+            decimals: Some(6),
+            splits: Some(vec![Split {
+                recipient: split_addr,
+                amount: "1000".to_string(),
+                label: None,
+                memo: None,
+            }]),
+            ..Default::default()
+        };
+        let payload =
+            build_charge_transaction(signer.as_ref(), &rpc, "5000000", "USDC", RECIPIENT, &md)
+                .await
+                .unwrap();
+        assert!(matches!(payload, CredentialPayload::Transaction { .. }));
+    }
+
+    // ── resolve_token_program ──
+
+    #[test]
+    fn resolve_tp_token_program() {
+        let rpc = dummy_rpc();
+        let mint = Pubkey::new_unique();
+        let md = MethodDetails {
+            token_program: Some(programs::TOKEN_PROGRAM.to_string()),
+            ..Default::default()
+        };
+        let tp = resolve_token_program(&rpc, &mint, &md).unwrap();
+        assert_eq!(tp.to_string(), programs::TOKEN_PROGRAM);
+    }
+
+    #[test]
+    fn resolve_tp_token_2022() {
+        let rpc = dummy_rpc();
+        let mint = Pubkey::new_unique();
+        let md = MethodDetails {
+            token_program: Some(programs::TOKEN_2022_PROGRAM.to_string()),
+            ..Default::default()
+        };
+        let tp = resolve_token_program(&rpc, &mint, &md).unwrap();
+        assert_eq!(tp.to_string(), programs::TOKEN_2022_PROGRAM);
+    }
+
+    #[test]
+    fn resolve_tp_invalid_program_string() {
+        let rpc = dummy_rpc();
+        let mint = Pubkey::new_unique();
+        let md = MethodDetails {
+            token_program: Some("invalid-key!!!".to_string()),
+            ..Default::default()
+        };
+        let err = resolve_token_program(&rpc, &mint, &md);
+        assert!(err.is_err());
+        assert!(format!("{}", err.unwrap_err()).contains("Invalid token program"));
+    }
+
+    #[test]
+    fn resolve_tp_unsupported_program() {
+        let rpc = dummy_rpc();
+        let mint = Pubkey::new_unique();
+        // System program is a valid pubkey but not a supported token program.
+        let md = MethodDetails {
+            token_program: Some(programs::SYSTEM_PROGRAM.to_string()),
+            ..Default::default()
+        };
+        let err = resolve_token_program(&rpc, &mint, &md);
+        assert!(err.is_err());
+        assert!(format!("{}", err.unwrap_err()).contains("Unsupported token program"));
+    }
+
+    // ── build_spl_instructions ──
+
+    #[test]
+    fn build_spl_no_splits() {
+        let signer_pk = Pubkey::new_unique();
+        let recipient = Pubkey::from_str(RECIPIENT).unwrap();
+        let rpc = dummy_rpc();
+        let md = MethodDetails {
+            token_program: Some(programs::TOKEN_PROGRAM.to_string()),
+            decimals: Some(6),
+            ..Default::default()
+        };
+        let mut ixs = vec![];
+        build_spl_instructions(
+            &mut ixs, &signer_pk, &recipient, &rpc, USDC_MINT, &md, 1_000_000, &[], None,
+        )
+        .unwrap();
+        // create_ata + transfer_checked
+        assert_eq!(ixs.len(), 2);
+    }
+
+    #[test]
+    fn build_spl_with_fee_payer() {
+        let signer_pk = Pubkey::new_unique();
+        let recipient = Pubkey::from_str(RECIPIENT).unwrap();
+        let fee_payer = Pubkey::new_unique();
+        let rpc = dummy_rpc();
+        let md = MethodDetails {
+            token_program: Some(programs::TOKEN_PROGRAM.to_string()),
+            decimals: Some(6),
+            ..Default::default()
+        };
+        let mut ixs = vec![];
+        build_spl_instructions(
+            &mut ixs,
+            &signer_pk,
+            &recipient,
+            &rpc,
+            USDC_MINT,
+            &md,
+            1_000_000,
+            &[],
+            Some(&fee_payer),
+        )
+        .unwrap();
+        assert_eq!(ixs.len(), 2);
+        // create_ata payer account should be the fee_payer.
+        assert_eq!(ixs[0].accounts[0].pubkey, fee_payer);
+    }
+
+    #[test]
+    fn build_spl_with_splits() {
+        let signer_pk = Pubkey::new_unique();
+        let recipient = Pubkey::from_str(RECIPIENT).unwrap();
+        let split_recipient = Pubkey::new_unique();
+        let rpc = dummy_rpc();
+        let md = MethodDetails {
+            token_program: Some(programs::TOKEN_PROGRAM.to_string()),
+            decimals: Some(6),
+            ..Default::default()
+        };
+        let splits = vec![Split {
+            recipient: split_recipient.to_string(),
+            amount: "1000".to_string(),
+            label: None,
+            memo: None,
+        }];
+        let mut ixs = vec![];
+        build_spl_instructions(
+            &mut ixs, &signer_pk, &recipient, &rpc, USDC_MINT, &md, 1_000_000, &splits, None,
+        )
+        .unwrap();
+        // (create_ata + transfer_checked) × 2 recipients
+        assert_eq!(ixs.len(), 4);
+    }
+
+    #[test]
+    fn build_spl_invalid_mint() {
+        let signer_pk = Pubkey::new_unique();
+        let recipient = Pubkey::new_unique();
+        let rpc = dummy_rpc();
+        let md = MethodDetails {
+            token_program: Some(programs::TOKEN_PROGRAM.to_string()),
+            ..Default::default()
+        };
+        let mut ixs = vec![];
+        let err = build_spl_instructions(
+            &mut ixs,
+            &signer_pk,
+            &recipient,
+            &rpc,
+            "not-a-mint!!!",
+            &md,
+            1_000_000,
+            &[],
+            None,
+        );
+        assert!(err.is_err());
+        assert!(format!("{}", err.unwrap_err()).contains("Invalid mint"));
+    }
+
+    #[test]
+    fn build_spl_invalid_split_recipient() {
+        let signer_pk = Pubkey::new_unique();
+        let recipient = Pubkey::from_str(RECIPIENT).unwrap();
+        let rpc = dummy_rpc();
+        let md = MethodDetails {
+            token_program: Some(programs::TOKEN_PROGRAM.to_string()),
+            decimals: Some(6),
+            ..Default::default()
+        };
+        let splits = vec![Split {
+            recipient: "not-a-pubkey!!!".to_string(),
+            amount: "1000".to_string(),
+            label: None,
+            memo: None,
+        }];
+        let mut ixs = vec![];
+        let err = build_spl_instructions(
+            &mut ixs, &signer_pk, &recipient, &rpc, USDC_MINT, &md, 1_000_000, &splits, None,
+        );
+        assert!(err.is_err());
+        assert!(format!("{}", err.unwrap_err()).contains("Invalid split recipient"));
+    }
+
+    #[test]
+    fn build_spl_invalid_split_amount() {
+        let signer_pk = Pubkey::new_unique();
+        let recipient = Pubkey::from_str(RECIPIENT).unwrap();
+        let split_recipient = Pubkey::new_unique();
+        let rpc = dummy_rpc();
+        let md = MethodDetails {
+            token_program: Some(programs::TOKEN_PROGRAM.to_string()),
+            decimals: Some(6),
+            ..Default::default()
+        };
+        let splits = vec![Split {
+            recipient: split_recipient.to_string(),
+            amount: "not-a-number".to_string(),
+            label: None,
+            memo: None,
+        }];
+        let mut ixs = vec![];
+        let err = build_spl_instructions(
+            &mut ixs, &signer_pk, &recipient, &rpc, USDC_MINT, &md, 1_000_000, &splits, None,
+        );
+        assert!(err.is_err());
+        assert!(format!("{}", err.unwrap_err()).contains("Invalid split amount"));
+    }
+
+    // ── build_credential_header ──
+
+    #[tokio::test]
+    async fn build_credential_header_sol_happy_path() {
+        use crate::protocol::core::Base64UrlJson;
+        use crate::protocol::intents::ChargeRequest;
+
+        let signer = make_signer();
+        let rpc = dummy_rpc();
+        let request = ChargeRequest {
+            amount: "1000000".to_string(),
+            currency: "SOL".to_string(),
+            recipient: Some(RECIPIENT.to_string()),
+            method_details: Some(
+                serde_json::to_value(MethodDetails {
+                    recent_blockhash: Some(ZERO_HASH.to_string()),
+                    ..Default::default()
+                })
+                .unwrap(),
+            ),
+            ..Default::default()
+        };
+        let request_b64 = Base64UrlJson::from_typed(&request).unwrap();
+        let challenge =
+            PaymentChallenge::new("test-id", "test-realm", "solana", "charge", request_b64);
+
+        let header = build_credential_header(signer.as_ref(), &rpc, &challenge)
+            .await
+            .unwrap();
+        assert!(header.starts_with("Payment "));
+    }
+
+    #[tokio::test]
+    async fn build_credential_header_no_recipient_error() {
+        use crate::protocol::core::Base64UrlJson;
+        use crate::protocol::intents::ChargeRequest;
+
+        let signer = make_signer();
+        let rpc = dummy_rpc();
+        let request = ChargeRequest {
+            amount: "1000000".to_string(),
+            currency: "SOL".to_string(),
+            recipient: None, // missing
+            method_details: Some(
+                serde_json::to_value(MethodDetails {
+                    recent_blockhash: Some(ZERO_HASH.to_string()),
+                    ..Default::default()
+                })
+                .unwrap(),
+            ),
+            ..Default::default()
+        };
+        let request_b64 = Base64UrlJson::from_typed(&request).unwrap();
+        let challenge =
+            PaymentChallenge::new("test-id", "test-realm", "solana", "charge", request_b64);
+
+        let err = build_credential_header(signer.as_ref(), &rpc, &challenge).await;
+        assert!(err.is_err());
+        assert!(format!("{}", err.unwrap_err()).contains("No recipient"));
+    }
+
+    #[tokio::test]
+    async fn build_credential_header_invalid_method_details() {
+        use crate::protocol::core::Base64UrlJson;
+        use crate::protocol::intents::ChargeRequest;
+
+        let signer = make_signer();
+        let rpc = dummy_rpc();
+        // A JSON string instead of an object fails to deserialize as MethodDetails.
+        let request = ChargeRequest {
+            amount: "1000000".to_string(),
+            currency: "SOL".to_string(),
+            recipient: Some(RECIPIENT.to_string()),
+            method_details: Some(serde_json::json!("this-is-a-string")),
+            ..Default::default()
+        };
+        let request_b64 = Base64UrlJson::from_typed(&request).unwrap();
+        let challenge =
+            PaymentChallenge::new("test-id", "test-realm", "solana", "charge", request_b64);
+
+        let err = build_credential_header(signer.as_ref(), &rpc, &challenge).await;
+        assert!(err.is_err());
+        assert!(format!("{}", err.unwrap_err()).contains("Invalid method details"));
+    }
 }

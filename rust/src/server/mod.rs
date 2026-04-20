@@ -19,6 +19,7 @@
 //! ```
 
 pub mod html;
+pub mod session;
 
 use std::{collections::HashSet, sync::Arc};
 
@@ -526,8 +527,31 @@ impl Mpp {
             .simulate_transaction(&tx)
             .map_err(|e| VerificationError::network_error(format!("Simulation RPC error: {e}")))?;
         if let Some(err) = sim.value.err {
+            // Include program logs for actionable diagnostics.
+            // Solana's TransactionError alone is opaque (e.g. "custom program
+            // error: 0x1"), but the logs reveal the actual cause.
+            let logs = sim
+                .value
+                .logs
+                .as_deref()
+                .unwrap_or(&[])
+                .iter()
+                .filter(|l| l.contains("Error") || l.contains("error") || l.contains("failed"))
+                .cloned()
+                .collect::<Vec<_>>();
+            let log_detail = if logs.is_empty() {
+                String::new()
+            } else {
+                format!(" — {}", logs.join("; "))
+            };
+
+            // Best-effort balance diagnostics: check payer USDC + fee payer SOL
+            // to surface "insufficient funds" clearly instead of opaque 0x1.
+            let balance_detail =
+                diagnose_balances(&self.rpc, &tx, request, method_details);
+
             return Err(VerificationError::transaction_failed(format!(
-                "Simulation failed: {err}"
+                "Simulation failed: {err}{log_detail}{balance_detail}"
             )));
         }
         tracing::info!(elapsed_ms = %t0.elapsed().as_millis(), step = "simulate", "verify_pull");
@@ -1087,6 +1111,90 @@ fn verify_ata_owner(
         &ata_program,
     );
     expected_ata == ata_pk
+}
+
+/// Best-effort balance check when simulation fails.
+///
+/// Queries the payer's token balance (USDC) and the fee payer's SOL balance
+/// to produce an actionable diagnostic like:
+///   " | payer USDC balance: 0.00 (need 0.10), fee payer SOL: 0.005"
+///
+/// Never fails — returns an empty string if any RPC call errors.
+fn diagnose_balances(
+    rpc: &RpcClient,
+    tx: &Transaction,
+    request: &ChargeRequest,
+    method_details: &MethodDetails,
+) -> String {
+    let mut parts: Vec<String> = Vec::new();
+
+    // Identify the payer (first signer that isn't the fee payer).
+    let fee_payer_pk = method_details
+        .fee_payer_key
+        .as_deref()
+        .and_then(|k| Pubkey::from_str(k).ok());
+    let payer_pk = tx
+        .message
+        .account_keys
+        .iter()
+        .find(|k| Some(*k) != fee_payer_pk.as_ref())
+        .or(tx.message.account_keys.first());
+
+    // Check payer's token balance.
+    if let Some(payer) = payer_pk {
+        if request.currency.to_uppercase() != "SOL" {
+            if let Ok(mint) = resolve_expected_mint(
+                &request.currency,
+                method_details.network.as_deref(),
+            ) {
+                let token_program =
+                    Pubkey::from_str(programs::TOKEN_PROGRAM).unwrap();
+                let ata_program =
+                    Pubkey::from_str(programs::ASSOCIATED_TOKEN_PROGRAM).unwrap();
+                let (ata, _) = Pubkey::find_program_address(
+                    &[payer.as_ref(), token_program.as_ref(), mint.as_ref()],
+                    &ata_program,
+                );
+                let decimals = method_details.decimals.unwrap_or(6) as u32;
+                let divisor = 10u64.pow(decimals) as f64;
+                let needed = request.amount.parse::<u64>().unwrap_or(0) as f64 / divisor;
+                match rpc.get_token_account_balance(&ata) {
+                    Ok(bal) => {
+                        let actual: f64 =
+                            bal.ui_amount.unwrap_or(0.0);
+                        if actual < needed {
+                            parts.push(format!(
+                                "payer {} balance: {:.2} (need {:.2})",
+                                request.currency, actual, needed,
+                            ));
+                        }
+                    }
+                    Err(_) => {
+                        parts.push(format!(
+                            "payer {} token account not found (need {:.2})",
+                            request.currency, needed,
+                        ));
+                    }
+                }
+            }
+        }
+    }
+
+    // Check fee payer SOL balance (for tx fees).
+    if let Some(fp) = fee_payer_pk {
+        if let Ok(lamports) = rpc.get_balance(&fp) {
+            let sol = lamports as f64 / 1_000_000_000.0;
+            if sol < 0.01 {
+                parts.push(format!("fee payer SOL: {sol:.4} (low)"));
+            }
+        }
+    }
+
+    if parts.is_empty() {
+        String::new()
+    } else {
+        format!(" | {}", parts.join(", "))
+    }
 }
 
 fn resolve_expected_mint(
