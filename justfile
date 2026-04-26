@@ -1,5 +1,7 @@
 set shell := ["bash", "-uc"]
 
+REPO_ROOT := `git rev-parse --show-toplevel`
+
 default:
     @just --list
 
@@ -146,3 +148,22 @@ fmt: ts-fmt rs-fmt go-fmt py-fmt
 
 # Pre-commit checks
 pre-commit: ts-audit ts-fmt ts-typecheck ts-test rs-fmt rs-lint rs-test go-fmt go-test-cover lua-test-cover py-lint py-test-cover
+
+# ── Payment-channels program binary ──
+
+# Build the program .so at the SHA Cargo.lock pins and verify its sha256
+fetch-program-binary:
+    ./scripts/fetch-program-binary.sh
+
+# One-time maintainer action: build + record the canonical .so hash
+fetch-program-binary-bootstrap:
+    ./scripts/fetch-program-binary.sh --bootstrap
+
+# Verify the built .so matches the committed hash (no rebuild)
+verify-binary-hash:
+    @test -s {{REPO_ROOT}}/rust/src/program/payment_channels/program_binary.sha256 || \
+        (echo "ERROR: program_binary.sha256 is empty; run 'just fetch-program-binary-bootstrap'" && exit 1)
+    @test -f {{REPO_ROOT}}/rust/tests/fixtures/payment_channels.so || \
+        (echo "ERROR: payment_channels.so missing; run 'just fetch-program-binary' first" && exit 1)
+    @cd {{REPO_ROOT}}/rust/tests/fixtures && \
+        shasum -a 256 -c {{REPO_ROOT}}/rust/src/program/payment_channels/program_binary.sha256
