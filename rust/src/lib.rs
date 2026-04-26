@@ -66,6 +66,10 @@ pub use protocol::intents::{
     SessionRequest, SessionSplit, SignedVoucher, TopUpPayload, VoucherData, VoucherPayload,
 };
 
+pub use protocol::solana::{
+    default_token_program_for_currency, mints, programs, resolve_stablecoin_mint,
+};
+
 // Store types
 pub use store::{ChannelState, ChannelStore, MemoryChannelStore, MemoryStore, Store, StoreError};
 

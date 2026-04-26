@@ -23,10 +23,11 @@ pub mod session;
 
 use std::{collections::HashSet, sync::Arc};
 
+use solana_message::compiled_instruction::CompiledInstruction;
 use solana_pubkey::Pubkey;
 use solana_rpc_client::rpc_client::RpcClient;
 use solana_signature::Signature;
-use solana_transaction::Transaction;
+use solana_transaction::{versioned::VersionedTransaction, Transaction};
 use solana_transaction_status::UiTransactionEncoding;
 use std::str::FromStr;
 
@@ -40,6 +41,9 @@ use crate::store::{MemoryStore, Store};
 
 const SECRET_KEY_ENV_VAR: &str = "MPP_SECRET_KEY";
 const METHOD_NAME: &str = "solana";
+const COMPUTE_BUDGET_PROGRAM: &str = "ComputeBudget111111111111111111111111111111";
+const MAX_COMPUTE_UNIT_LIMIT: u32 = 200_000;
+const MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS: u64 = 5_000_000;
 
 const DEFAULT_REALM: &str = "MPP Payment";
 
@@ -218,6 +222,7 @@ impl Mpp {
         amount: &str,
         options: ChargeOptions<'_>,
     ) -> Result<PaymentChallenge, Error> {
+        self.validate_charge_options(&options)?;
         let base_units = crate::protocol::intents::parse_units(amount, self.decimals as u8)?;
 
         let mut request = ChargeRequest {
@@ -248,7 +253,10 @@ impl Mpp {
         if self.currency.to_uppercase() != "SOL" {
             details.insert(
                 "tokenProgram".into(),
-                serde_json::json!(programs::TOKEN_PROGRAM),
+                serde_json::json!(crate::protocol::solana::default_token_program_for_currency(
+                    &self.currency,
+                    Some(&self.network),
+                )),
             );
         }
 
@@ -285,6 +293,46 @@ impl Mpp {
             options.description,
             None,
         ))
+    }
+
+    /// Generate the complete challenge set for a charge.
+    pub fn charge_variants_with_options(
+        &self,
+        amount: &str,
+        options: ChargeOptions<'_>,
+    ) -> Result<Vec<PaymentChallenge>, Error> {
+        self.charge_with_options(amount, options)
+            .map(|challenge| vec![challenge])
+    }
+
+    fn validate_charge_options(&self, options: &ChargeOptions<'_>) -> Result<(), Error> {
+        let has_ata_creation_splits = options
+            .splits
+            .iter()
+            .any(|split| split.ata_creation_required == Some(true));
+        if !has_ata_creation_splits {
+            return Ok(());
+        }
+
+        if self.currency.eq_ignore_ascii_case("SOL") {
+            return Err(Error::InvalidConfig(
+                "ataCreationRequired requires an SPL token currency".into(),
+            ));
+        }
+        if crate::protocol::solana::resolve_stablecoin_mint(&self.currency, Some(&self.network))
+            != Some(self.currency.as_str())
+        {
+            return Err(Error::InvalidConfig(
+                "ataCreationRequired requires currency to be an SPL token mint address".into(),
+            ));
+        }
+        Pubkey::from_str(&self.currency).map_err(|e| {
+            Error::InvalidConfig(format!(
+                "ataCreationRequired requires a valid SPL token mint address: {e}"
+            ))
+        })?;
+
+        Ok(())
     }
 
     /// Generate a charge challenge with explicit base-unit parameters.
@@ -467,21 +515,12 @@ impl Mpp {
                     VerificationError::invalid_payload(format!("Invalid base64 transaction: {e}"))
                 })?;
 
-        // Accept both legacy and versioned (v0) transactions.
-        // Try legacy first (most common from our SDK clients), fall back to versioned.
-        let mut tx: Transaction = bincode::deserialize::<Transaction>(&tx_bytes)
-            .or_else(|_| {
-                // Try versioned transaction — extract the legacy Transaction from it.
-                let versioned: solana_transaction::versioned::VersionedTransaction =
-                    bincode::deserialize(&tx_bytes)?;
-                match versioned.into_legacy_transaction() {
-                    Some(legacy) => Ok(legacy),
-                    None => Err(bincode::Error::from(std::io::Error::new(
-                        std::io::ErrorKind::InvalidData,
-                        "v0 transactions with address lookup tables are not supported",
-                    ))),
-                }
-            })
+        // Accept legacy transactions and v0 transactions. For v0, we only
+        // allow static account keys so the pre-broadcast verifier can inspect
+        // the exact account set without resolving address lookup tables.
+        let mut tx: VersionedTransaction = bincode::deserialize::<Transaction>(&tx_bytes)
+            .map(VersionedTransaction::from)
+            .or_else(|_| bincode::deserialize::<VersionedTransaction>(&tx_bytes))
             .map_err(|e| VerificationError::invalid_payload(format!("Invalid transaction: {e}")))?;
 
         let t0 = std::time::Instant::now();
@@ -489,10 +528,10 @@ impl Mpp {
         // Reject up-front if the client signed against the wrong network
         // (e.g. mainnet keypair pointed at a sandbox-configured server, or
         // vice versa). Cheaper and clearer than letting the broadcast fail.
-        check_network_blockhash(&self.network, &tx.message.recent_blockhash.to_string())?;
+        check_network_blockhash(&self.network, &tx.message.recent_blockhash().to_string())?;
 
         // Verify the transaction instructions BEFORE co-signing or broadcasting.
-        verify_transaction_pre_broadcast(&tx, request, method_details)?;
+        verify_versioned_transaction_pre_broadcast(&tx, request, method_details)?;
         tracing::info!(elapsed_ms = %t0.elapsed().as_millis(), step = "pre_broadcast_check", "verify_pull");
 
         // Co-sign if server is fee payer (only after verification passes).
@@ -500,16 +539,17 @@ impl Mpp {
             let signer = self.fee_payer_signer.as_ref().ok_or_else(|| {
                 VerificationError::new("Fee payer enabled but no signer configured")
             })?;
-            let msg_data = tx.message_data();
+            let msg_data = tx.message.serialize();
             let sig_bytes = signer
                 .sign_message(&msg_data)
                 .await
                 .map_err(|e| VerificationError::new(format!("Fee payer signing failed: {e}")))?;
             let sig = Signature::from(<[u8; 64]>::from(sig_bytes));
             let fee_payer_pubkey = signer.pubkey();
+            let account_keys = tx.message.static_account_keys();
             let idx = tx
                 .message
-                .account_keys
+                .static_account_keys()
                 .iter()
                 .position(|k| k == &fee_payer_pubkey)
                 .ok_or_else(|| {
@@ -517,6 +557,11 @@ impl Mpp {
                         "Fee payer not found in transaction accounts",
                     )
                 })?;
+            if idx >= tx.signatures.len() || account_keys.get(idx) != Some(&fee_payer_pubkey) {
+                return Err(VerificationError::invalid_payload(
+                    "Fee payer is not a required signer in the transaction",
+                ));
+            }
             tx.signatures[idx] = sig;
         }
         tracing::info!(elapsed_ms = %t0.elapsed().as_millis(), step = "cosign", "verify_pull");
@@ -649,18 +694,82 @@ impl Mpp {
 
         let is_native_sol = request.currency.to_uppercase() == "SOL";
         let instructions = extract_parsed_instructions(&tx)?;
+        let expected_ata_payer = if method_details.fee_payer.unwrap_or(false) {
+            method_details.fee_payer_key.as_deref()
+        } else {
+            None
+        };
+        let fee_payer_pubkey = expected_ata_payer
+            .map(|key| {
+                Pubkey::from_str(key).map_err(|e| {
+                    VerificationError::invalid_payload(format!("Invalid fee payer: {e}"))
+                })
+            })
+            .transpose()?;
+        let _recipient_pubkey = Pubkey::from_str(recipient)
+            .map_err(|e| VerificationError::invalid_recipient(format!("Invalid recipient: {e}")))?;
+        let ata_policy = expected_ata_creation_policy(splits, fee_payer_pubkey.as_ref())?;
+        let allowed_ata_owners = ata_policy
+            .allowed_owners
+            .iter()
+            .map(ToString::to_string)
+            .collect::<HashSet<_>>();
+        let required_ata_owners = ata_policy
+            .required_owners
+            .iter()
+            .map(ToString::to_string)
+            .collect::<HashSet<_>>();
 
         if is_native_sol {
-            verify_sol_transfers(&instructions, recipient, primary_amount, splits)?;
+            if splits
+                .iter()
+                .any(|split| split.ata_creation_required == Some(true))
+            {
+                return Err(VerificationError::invalid_payload(
+                    "ataCreationRequired requires an SPL token charge",
+                ));
+            }
+            let matched = verify_sol_transfers(&instructions, recipient, primary_amount, splits)?;
+            validate_parsed_instruction_allowlist(
+                &instructions,
+                &matched,
+                None,
+                &allowed_ata_owners,
+                None,
+                expected_ata_payer,
+                &required_ata_owners,
+            )?;
         } else {
             let expected_mint =
                 resolve_expected_mint(&request.currency, method_details.network.as_deref())?;
-            verify_spl_transfers(
+            if !required_ata_owners.is_empty() && request.currency != expected_mint.to_string() {
+                return Err(VerificationError::invalid_payload(
+                    "ataCreationRequired requires currency to be an SPL token mint address",
+                ));
+            }
+            let expected_token_program =
+                method_details.token_program.as_deref().unwrap_or_else(|| {
+                    crate::protocol::solana::default_token_program_for_currency(
+                        &request.currency,
+                        method_details.network.as_deref(),
+                    )
+                });
+            let matched = verify_spl_transfers(
                 &instructions,
                 recipient,
                 &expected_mint.to_string(),
                 primary_amount,
                 splits,
+                Some(expected_token_program),
+            )?;
+            validate_parsed_instruction_allowlist(
+                &instructions,
+                &matched,
+                Some(&expected_mint.to_string()),
+                &allowed_ata_owners,
+                Some(expected_token_program),
+                expected_ata_payer,
+                &required_ata_owners,
             )?;
         }
 
@@ -726,11 +835,26 @@ pub fn check_network_blockhash(
 // Inspects the raw Transaction instructions to verify amounts and recipients
 // BEFORE broadcasting, preventing fund loss on invalid credentials.
 
+#[cfg(test)]
 fn verify_transaction_pre_broadcast(
     tx: &Transaction,
     request: &ChargeRequest,
     method_details: &MethodDetails,
 ) -> Result<(), VerificationError> {
+    verify_versioned_transaction_pre_broadcast(
+        &VersionedTransaction::from(tx.clone()),
+        request,
+        method_details,
+    )
+}
+
+fn verify_versioned_transaction_pre_broadcast(
+    tx: &VersionedTransaction,
+    request: &ChargeRequest,
+    method_details: &MethodDetails,
+) -> Result<(), VerificationError> {
+    reject_address_lookup_tables(tx)?;
+
     let splits = method_details.splits.as_deref().unwrap_or(&[]);
     if splits.len() > 8 {
         return Err(VerificationError::too_many_splits(format!(
@@ -762,9 +886,21 @@ fn verify_transaction_pre_broadcast(
     let recipient_pk = Pubkey::from_str(recipient)
         .map_err(|e| VerificationError::invalid_recipient(format!("Invalid recipient: {e}")))?;
 
+    let fee_payer = expected_fee_payer(tx, method_details)?;
     let is_native_sol = request.currency.to_uppercase() == "SOL";
-    let account_keys = &tx.message.account_keys;
+    if is_native_sol
+        && splits
+            .iter()
+            .any(|split| split.ata_creation_required == Some(true))
+    {
+        return Err(VerificationError::invalid_payload(
+            "ataCreationRequired requires an SPL token charge",
+        ));
+    }
+    let account_keys = tx.message.static_account_keys();
     let mut matched_instruction_indexes = HashSet::new();
+    let mut expected_recipients = vec![recipient_pk];
+    let ata_policy = expected_ata_creation_policy(splits, fee_payer.as_ref())?;
 
     if is_native_sol {
         verify_sol_transfer_instructions(
@@ -772,12 +908,14 @@ fn verify_transaction_pre_broadcast(
             account_keys,
             &recipient_pk,
             primary_amount,
+            fee_payer.as_ref(),
             &mut matched_instruction_indexes,
         )?;
         for split in splits {
             let split_pk = Pubkey::from_str(&split.recipient).map_err(|e| {
                 VerificationError::invalid_recipient(format!("Invalid split recipient: {e}"))
             })?;
+            expected_recipients.push(split_pk);
             let amt: u64 = split
                 .amount
                 .parse()
@@ -785,26 +923,47 @@ fn verify_transaction_pre_broadcast(
             verify_sol_transfer_instructions(
                 tx,
                 account_keys,
-                &split_pk,
+                expected_recipients.last().unwrap(),
                 amt,
+                fee_payer.as_ref(),
                 &mut matched_instruction_indexes,
             )?;
         }
+        validate_instruction_allowlist(
+            tx,
+            account_keys,
+            &matched_instruction_indexes,
+            None,
+            &ata_policy.allowed_owners,
+            None,
+            fee_payer.as_ref(),
+            &ata_policy.required_owners,
+        )?;
     } else {
         let expected_mint =
             resolve_expected_mint(&request.currency, method_details.network.as_deref())?;
+        if !ata_policy.required_owners.is_empty() && request.currency != expected_mint.to_string() {
+            return Err(VerificationError::invalid_payload(
+                "ataCreationRequired requires currency to be an SPL token mint address",
+            ));
+        }
+        let expected_token_program = expected_token_program(method_details)?;
         verify_spl_transfer_instructions(
             tx,
             account_keys,
             &recipient_pk,
             &expected_mint,
             primary_amount,
+            expected_token_program.as_ref(),
+            method_details.decimals,
+            fee_payer.as_ref(),
             &mut matched_instruction_indexes,
         )?;
         for split in splits {
             let split_pk = Pubkey::from_str(&split.recipient).map_err(|e| {
                 VerificationError::invalid_recipient(format!("Invalid split recipient: {e}"))
             })?;
+            expected_recipients.push(split_pk);
             let amt: u64 = split
                 .amount
                 .parse()
@@ -812,28 +971,337 @@ fn verify_transaction_pre_broadcast(
             verify_spl_transfer_instructions(
                 tx,
                 account_keys,
-                &split_pk,
+                expected_recipients.last().unwrap(),
                 &expected_mint,
                 amt,
+                expected_token_program.as_ref(),
+                method_details.decimals,
+                fee_payer.as_ref(),
                 &mut matched_instruction_indexes,
             )?;
+        }
+        validate_instruction_allowlist(
+            tx,
+            account_keys,
+            &matched_instruction_indexes,
+            Some(&expected_mint),
+            &ata_policy.allowed_owners,
+            expected_token_program.as_ref(),
+            fee_payer.as_ref(),
+            &ata_policy.required_owners,
+        )?;
+    }
+
+    Ok(())
+}
+
+struct AtaCreationPolicy {
+    allowed_owners: HashSet<Pubkey>,
+    required_owners: HashSet<Pubkey>,
+}
+
+fn expected_ata_creation_policy(
+    splits: &[Split],
+    fee_payer: Option<&Pubkey>,
+) -> Result<AtaCreationPolicy, VerificationError> {
+    let mut required_owners = HashSet::new();
+    let mut split_owners = Vec::with_capacity(splits.len());
+    for split in splits {
+        let owner = Pubkey::from_str(&split.recipient).map_err(|e| {
+            VerificationError::invalid_recipient(format!("Invalid split recipient: {e}"))
+        })?;
+        if split.ata_creation_required == Some(true) {
+            required_owners.insert(owner);
+        }
+        split_owners.push(owner);
+    }
+
+    let allowed_owners = if fee_payer.is_some() {
+        required_owners.clone()
+    } else {
+        split_owners.into_iter().collect()
+    };
+
+    Ok(AtaCreationPolicy {
+        allowed_owners,
+        required_owners,
+    })
+}
+
+fn reject_address_lookup_tables(tx: &VersionedTransaction) -> Result<(), VerificationError> {
+    if tx
+        .message
+        .address_table_lookups()
+        .is_some_and(|lookups| !lookups.is_empty())
+    {
+        return Err(VerificationError::invalid_payload(
+            "v0 transactions with address lookup tables are not supported",
+        ));
+    }
+
+    Ok(())
+}
+
+fn expected_fee_payer(
+    tx: &VersionedTransaction,
+    method_details: &MethodDetails,
+) -> Result<Option<Pubkey>, VerificationError> {
+    if !method_details.fee_payer.unwrap_or(false) {
+        return Ok(None);
+    }
+
+    let fee_payer_key = method_details.fee_payer_key.as_deref().ok_or_else(|| {
+        VerificationError::invalid_payload("feePayer=true requires feePayerKey in methodDetails")
+    })?;
+    let fee_payer = Pubkey::from_str(fee_payer_key)
+        .map_err(|e| VerificationError::invalid_payload(format!("Invalid fee payer: {e}")))?;
+    let tx_fee_payer = tx
+        .message
+        .static_account_keys()
+        .first()
+        .ok_or_else(|| VerificationError::invalid_payload("Transaction has no fee payer"))?;
+
+    if tx_fee_payer != &fee_payer {
+        return Err(VerificationError::invalid_payload(format!(
+            "Transaction fee payer must be {fee_payer}"
+        )));
+    }
+
+    Ok(Some(fee_payer))
+}
+
+fn expected_token_program(
+    method_details: &MethodDetails,
+) -> Result<Option<Pubkey>, VerificationError> {
+    let Some(token_program) = method_details.token_program.as_deref() else {
+        return Ok(None);
+    };
+
+    if token_program != programs::TOKEN_PROGRAM && token_program != programs::TOKEN_2022_PROGRAM {
+        return Err(VerificationError::invalid_payload(format!(
+            "Unsupported token program: {token_program}"
+        )));
+    }
+
+    Pubkey::from_str(token_program)
+        .map(Some)
+        .map_err(|e| VerificationError::invalid_payload(format!("Invalid token program: {e}")))
+}
+
+fn account_key<'a>(
+    account_keys: &'a [Pubkey],
+    index: u8,
+    label: &str,
+) -> Result<&'a Pubkey, VerificationError> {
+    account_keys
+        .get(index as usize)
+        .ok_or_else(|| VerificationError::invalid_payload(format!("Invalid {label} index")))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn validate_instruction_allowlist(
+    tx: &VersionedTransaction,
+    account_keys: &[Pubkey],
+    matched_payment_instruction_indexes: &HashSet<usize>,
+    expected_mint: Option<&Pubkey>,
+    allowed_ata_owners: &HashSet<Pubkey>,
+    expected_token_program: Option<&Pubkey>,
+    fee_payer: Option<&Pubkey>,
+    required_ata_owners: &HashSet<Pubkey>,
+) -> Result<(), VerificationError> {
+    let compute_budget_program = Pubkey::from_str(COMPUTE_BUDGET_PROGRAM).unwrap();
+    let system_program = Pubkey::from_str(programs::SYSTEM_PROGRAM).unwrap();
+    let token_program = Pubkey::from_str(programs::TOKEN_PROGRAM).unwrap();
+    let token_2022_program = Pubkey::from_str(programs::TOKEN_2022_PROGRAM).unwrap();
+    let ata_program = Pubkey::from_str(programs::ASSOCIATED_TOKEN_PROGRAM).unwrap();
+    let tx_fee_payer = tx
+        .message
+        .static_account_keys()
+        .first()
+        .ok_or_else(|| VerificationError::invalid_payload("Transaction has no fee payer"))?;
+    let expected_ata_payer = fee_payer.unwrap_or(tx_fee_payer);
+    let mut created_ata_owners = HashSet::new();
+
+    for (index, ix) in tx.message.instructions().iter().enumerate() {
+        let program_id = account_keys
+            .get(ix.program_id_index as usize)
+            .ok_or_else(|| VerificationError::invalid_payload("Invalid program_id_index"))?;
+
+        if program_id == &compute_budget_program {
+            validate_compute_budget_instruction(ix)?;
+            continue;
+        }
+
+        if program_id == &system_program {
+            if matched_payment_instruction_indexes.contains(&index) {
+                continue;
+            }
+            return Err(VerificationError::invalid_payload(
+                "Unexpected System Program instruction in payment transaction",
+            ));
+        }
+
+        if program_id == &token_program || program_id == &token_2022_program {
+            if matched_payment_instruction_indexes.contains(&index) {
+                continue;
+            }
+            return Err(VerificationError::invalid_payload(
+                "Unexpected Token Program instruction in payment transaction",
+            ));
+        }
+
+        if program_id == &ata_program {
+            let owner = validate_create_ata_idempotent_instruction(
+                ix,
+                account_keys,
+                expected_mint,
+                allowed_ata_owners,
+                expected_token_program,
+                expected_ata_payer,
+            )?;
+            created_ata_owners.insert(owner);
+            continue;
+        }
+
+        return Err(VerificationError::invalid_payload(format!(
+            "Unexpected program instruction in payment transaction: {program_id}"
+        )));
+    }
+
+    for owner in required_ata_owners {
+        if !created_ata_owners.contains(owner) {
+            return Err(VerificationError::invalid_payload(format!(
+                "Missing required ATA creation instruction for split recipient {owner}"
+            )));
         }
     }
 
     Ok(())
 }
 
+fn validate_compute_budget_instruction(ix: &CompiledInstruction) -> Result<(), VerificationError> {
+    if !ix.accounts.is_empty() {
+        return Err(VerificationError::invalid_payload(
+            "Compute budget instruction must not have accounts",
+        ));
+    }
+
+    match ix.data.first().copied() {
+        Some(2) if ix.data.len() == 5 => {
+            let units = u32::from_le_bytes(ix.data[1..5].try_into().unwrap());
+            if units > MAX_COMPUTE_UNIT_LIMIT {
+                return Err(VerificationError::invalid_payload(format!(
+                    "Compute unit limit {units} exceeds maximum {MAX_COMPUTE_UNIT_LIMIT}"
+                )));
+            }
+            Ok(())
+        }
+        Some(3) if ix.data.len() == 9 => {
+            let price = u64::from_le_bytes(ix.data[1..9].try_into().unwrap());
+            if price > MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS {
+                return Err(VerificationError::invalid_payload(format!(
+                    "Compute unit price {price} exceeds maximum {MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS}"
+                )));
+            }
+            Ok(())
+        }
+        _ => Err(VerificationError::invalid_payload(
+            "Unsupported compute budget instruction",
+        )),
+    }
+}
+
+fn validate_create_ata_idempotent_instruction(
+    ix: &CompiledInstruction,
+    account_keys: &[Pubkey],
+    expected_mint: Option<&Pubkey>,
+    allowed_ata_owners: &HashSet<Pubkey>,
+    expected_token_program: Option<&Pubkey>,
+    expected_payer: &Pubkey,
+) -> Result<Pubkey, VerificationError> {
+    let Some(expected_mint) = expected_mint else {
+        return Err(VerificationError::invalid_payload(
+            "ATA creation is not allowed for native SOL payments",
+        ));
+    };
+
+    if ix.data.as_slice() != [1] {
+        return Err(VerificationError::invalid_payload(
+            "Only idempotent ATA creation is allowed",
+        ));
+    }
+    if ix.accounts.len() != 6 {
+        return Err(VerificationError::invalid_payload(
+            "Unexpected ATA creation account layout",
+        ));
+    }
+
+    let payer = account_key(account_keys, ix.accounts[0], "ATA payer")?;
+    let ata = account_key(account_keys, ix.accounts[1], "ATA address")?;
+    let owner = account_key(account_keys, ix.accounts[2], "ATA owner")?;
+    let mint = account_key(account_keys, ix.accounts[3], "ATA mint")?;
+    let system_program = account_key(account_keys, ix.accounts[4], "ATA system program")?;
+    let token_program = account_key(account_keys, ix.accounts[5], "ATA token program")?;
+
+    if payer != expected_payer {
+        return Err(VerificationError::invalid_payload(
+            "ATA payer must match the transaction fee payer",
+        ));
+    }
+    if mint != expected_mint {
+        return Err(VerificationError::invalid_payload(
+            "ATA creation mint does not match the charge currency",
+        ));
+    }
+    if !allowed_ata_owners.contains(owner) {
+        return Err(VerificationError::invalid_payload(
+            "ATA creation owner is not authorized by the challenge",
+        ));
+    }
+    if system_program.to_string() != programs::SYSTEM_PROGRAM {
+        return Err(VerificationError::invalid_payload(
+            "ATA creation must reference the System Program",
+        ));
+    }
+    if token_program.to_string() != programs::TOKEN_PROGRAM
+        && token_program.to_string() != programs::TOKEN_2022_PROGRAM
+    {
+        return Err(VerificationError::invalid_payload(
+            "ATA creation uses an unsupported token program",
+        ));
+    }
+    if expected_token_program.is_some_and(|expected| token_program != expected) {
+        return Err(VerificationError::invalid_payload(
+            "ATA creation token program does not match methodDetails.tokenProgram",
+        ));
+    }
+
+    let ata_program = Pubkey::from_str(programs::ASSOCIATED_TOKEN_PROGRAM).unwrap();
+    let (expected_ata, _) = Pubkey::find_program_address(
+        &[owner.as_ref(), token_program.as_ref(), mint.as_ref()],
+        &ata_program,
+    );
+    if ata != &expected_ata {
+        return Err(VerificationError::invalid_payload(
+            "ATA creation address does not match owner/mint/token program",
+        ));
+    }
+
+    Ok(*owner)
+}
+
 /// Check that the transaction contains a System Program transfer of `amount` to `recipient`.
 fn verify_sol_transfer_instructions(
-    tx: &Transaction,
+    tx: &VersionedTransaction,
     account_keys: &[Pubkey],
     recipient: &Pubkey,
     amount: u64,
+    fee_payer: Option<&Pubkey>,
     matched_instruction_indexes: &mut HashSet<usize>,
 ) -> Result<(), VerificationError> {
     let system_program = Pubkey::from_str(programs::SYSTEM_PROGRAM).unwrap();
 
-    for (index, ix) in tx.message.instructions.iter().enumerate() {
+    for (index, ix) in tx.message.instructions().iter().enumerate() {
         if matched_instruction_indexes.contains(&index) {
             continue;
         }
@@ -853,14 +1321,21 @@ fn verify_sol_transfer_instructions(
             continue;
         }
         let ix_amount = u64::from_le_bytes(ix.data[4..12].try_into().unwrap());
-        // destination is account_keys[accounts[1]]
         if ix.accounts.len() < 2 {
             continue;
         }
+        let source = account_keys
+            .get(ix.accounts[0] as usize)
+            .ok_or_else(|| VerificationError::invalid_payload("Invalid source index"))?;
         let dest = account_keys
             .get(ix.accounts[1] as usize)
             .ok_or_else(|| VerificationError::invalid_payload("Invalid destination index"))?;
         if dest == recipient && ix_amount == amount {
+            if fee_payer.is_some_and(|fee_payer| source == fee_payer) {
+                return Err(VerificationError::invalid_payload(
+                    "Fee payer cannot fund the SOL payment transfer",
+                ));
+            }
             matched_instruction_indexes.insert(index);
             return Ok(());
         }
@@ -871,19 +1346,23 @@ fn verify_sol_transfer_instructions(
 }
 
 /// Check that the transaction contains an SPL Token transferChecked of `amount` to `recipient`'s ATA.
+#[allow(clippy::too_many_arguments)]
 fn verify_spl_transfer_instructions(
-    tx: &Transaction,
+    tx: &VersionedTransaction,
     account_keys: &[Pubkey],
     recipient: &Pubkey,
     expected_mint: &Pubkey,
     amount: u64,
+    expected_token_program: Option<&Pubkey>,
+    expected_decimals: Option<u8>,
+    fee_payer: Option<&Pubkey>,
     matched_instruction_indexes: &mut HashSet<usize>,
 ) -> Result<(), VerificationError> {
     let token_program = Pubkey::from_str(programs::TOKEN_PROGRAM).unwrap();
     let token_2022_program = Pubkey::from_str(programs::TOKEN_2022_PROGRAM).unwrap();
     let ata_program = Pubkey::from_str(programs::ASSOCIATED_TOKEN_PROGRAM).unwrap();
 
-    for (index, ix) in tx.message.instructions.iter().enumerate() {
+    for (index, ix) in tx.message.instructions().iter().enumerate() {
         if matched_instruction_indexes.contains(&index) {
             continue;
         }
@@ -891,6 +1370,9 @@ fn verify_spl_transfer_instructions(
             .get(ix.program_id_index as usize)
             .ok_or_else(|| VerificationError::invalid_payload("Invalid program_id_index"))?;
         if program_id != &token_program && program_id != &token_2022_program {
+            continue;
+        }
+        if expected_token_program.is_some_and(|expected| program_id != expected) {
             continue;
         }
         // SPL Token TransferChecked instruction:
@@ -908,7 +1390,13 @@ fn verify_spl_transfer_instructions(
         if ix_amount != amount {
             continue;
         }
+        if expected_decimals.is_some_and(|decimals| ix.data[9] != decimals) {
+            continue;
+        }
         // Verify the destination ATA belongs to the recipient
+        let source_ata = account_keys
+            .get(ix.accounts[0] as usize)
+            .ok_or_else(|| VerificationError::invalid_payload("Invalid source index"))?;
         let dest_ata = account_keys
             .get(ix.accounts[2] as usize)
             .ok_or_else(|| VerificationError::invalid_payload("Invalid destination index"))?;
@@ -917,6 +1405,26 @@ fn verify_spl_transfer_instructions(
             .ok_or_else(|| VerificationError::invalid_payload("Invalid mint index"))?;
         if mint != expected_mint {
             continue;
+        }
+        let authority = account_keys
+            .get(ix.accounts[3] as usize)
+            .ok_or_else(|| VerificationError::invalid_payload("Invalid authority index"))?;
+        if let Some(fee_payer) = fee_payer {
+            if authority == fee_payer {
+                return Err(VerificationError::invalid_payload(
+                    "Fee payer cannot authorize the SPL payment transfer",
+                ));
+            }
+
+            let (fee_payer_ata, _) = Pubkey::find_program_address(
+                &[fee_payer.as_ref(), program_id.as_ref(), mint.as_ref()],
+                &ata_program,
+            );
+            if source_ata == &fee_payer_ata {
+                return Err(VerificationError::invalid_payload(
+                    "Fee payer token account cannot fund the SPL payment transfer",
+                ));
+            }
         }
         // Derive expected ATA: PDA([owner, token_program, mint], ata_program)
         let (expected_ata, _) = Pubkey::find_program_address(
@@ -940,7 +1448,7 @@ fn verify_sol_transfers(
     recipient: &str,
     primary_amount: u64,
     splits: &[Split],
-) -> Result<(), VerificationError> {
+) -> Result<HashSet<usize>, VerificationError> {
     let mut matched_instruction_indexes = HashSet::new();
     find_sol_transfer(
         instructions,
@@ -966,7 +1474,7 @@ fn verify_sol_transfers(
             ))
         })?;
     }
-    Ok(())
+    Ok(matched_instruction_indexes)
 }
 
 fn find_sol_transfer(
@@ -1007,13 +1515,15 @@ fn verify_spl_transfers(
     mint: &str,
     primary_amount: u64,
     splits: &[Split],
-) -> Result<(), VerificationError> {
+    expected_token_program: Option<&str>,
+) -> Result<HashSet<usize>, VerificationError> {
     let mut matched_instruction_indexes = HashSet::new();
     find_spl_transfer(
         instructions,
         recipient,
         mint,
         primary_amount,
+        expected_token_program,
         &mut matched_instruction_indexes,
     )?;
     for split in splits {
@@ -1026,6 +1536,7 @@ fn verify_spl_transfers(
             &split.recipient,
             mint,
             amt,
+            expected_token_program,
             &mut matched_instruction_indexes,
         )
         .map_err(|_| {
@@ -1035,7 +1546,7 @@ fn verify_spl_transfers(
             ))
         })?;
     }
-    Ok(())
+    Ok(matched_instruction_indexes)
 }
 
 fn find_spl_transfer(
@@ -1043,6 +1554,7 @@ fn find_spl_transfer(
     recipient: &str,
     expected_mint: &str,
     amount: u64,
+    expected_token_program: Option<&str>,
     matched_instruction_indexes: &mut HashSet<usize>,
 ) -> Result<(), VerificationError> {
     for (index, ix) in instructions.iter().enumerate() {
@@ -1051,6 +1563,9 @@ fn find_spl_transfer(
         }
         let program = ix.get("programId").and_then(|p| p.as_str()).unwrap_or("");
         if program != programs::TOKEN_PROGRAM && program != programs::TOKEN_2022_PROGRAM {
+            continue;
+        }
+        if expected_token_program.is_some_and(|expected| program != expected) {
             continue;
         }
         if let Some(parsed) = ix.get("parsed").and_then(|p| p.as_object()) {
@@ -1112,6 +1627,183 @@ fn verify_ata_owner(
     expected_ata == ata_pk
 }
 
+fn validate_parsed_instruction_allowlist(
+    instructions: &[serde_json::Value],
+    matched_payment_instruction_indexes: &HashSet<usize>,
+    expected_mint: Option<&str>,
+    allowed_ata_owners: &HashSet<String>,
+    expected_token_program: Option<&str>,
+    expected_ata_payer: Option<&str>,
+    required_ata_owners: &HashSet<String>,
+) -> Result<(), VerificationError> {
+    let mut created_ata_owners = HashSet::new();
+
+    for (index, ix) in instructions.iter().enumerate() {
+        let program_id = parsed_program_id(ix);
+
+        if program_id == Some(programs::COMPUTE_BUDGET_PROGRAM) {
+            continue;
+        }
+
+        if program_id == Some(programs::SYSTEM_PROGRAM) {
+            if matched_payment_instruction_indexes.contains(&index) {
+                continue;
+            }
+            return Err(VerificationError::invalid_payload(
+                "Unexpected System Program instruction in payment transaction",
+            ));
+        }
+
+        if program_id == Some(programs::TOKEN_PROGRAM)
+            || program_id == Some(programs::TOKEN_2022_PROGRAM)
+        {
+            if matched_payment_instruction_indexes.contains(&index) {
+                continue;
+            }
+            return Err(VerificationError::invalid_payload(
+                "Unexpected Token Program instruction in payment transaction",
+            ));
+        }
+
+        if program_id == Some(programs::ASSOCIATED_TOKEN_PROGRAM) {
+            let owner = validate_parsed_ata_creation_instruction(
+                ix,
+                expected_mint,
+                allowed_ata_owners,
+                expected_token_program,
+                expected_ata_payer,
+            )?;
+            created_ata_owners.insert(owner);
+            continue;
+        }
+
+        return Err(VerificationError::invalid_payload(format!(
+            "Unexpected program instruction in payment transaction: {}",
+            program_id.unwrap_or("unknown")
+        )));
+    }
+
+    for owner in required_ata_owners {
+        if !created_ata_owners.contains(owner) {
+            return Err(VerificationError::invalid_payload(format!(
+                "Missing required ATA creation instruction for split recipient {owner}"
+            )));
+        }
+    }
+
+    Ok(())
+}
+
+fn parsed_program_id(ix: &serde_json::Value) -> Option<&str> {
+    if let Some(program_id) = ix
+        .get("programId")
+        .and_then(|program_id| program_id.as_str())
+    {
+        return Some(program_id);
+    }
+
+    match ix.get("program").and_then(|program| program.as_str()) {
+        Some("system") => Some(programs::SYSTEM_PROGRAM),
+        Some("compute-budget") => Some(programs::COMPUTE_BUDGET_PROGRAM),
+        Some("spl-associated-token-account") => Some(programs::ASSOCIATED_TOKEN_PROGRAM),
+        _ => None,
+    }
+}
+
+fn validate_parsed_ata_creation_instruction(
+    ix: &serde_json::Value,
+    expected_mint: Option<&str>,
+    allowed_ata_owners: &HashSet<String>,
+    expected_token_program: Option<&str>,
+    expected_payer: Option<&str>,
+) -> Result<String, VerificationError> {
+    let expected_mint = expected_mint.ok_or_else(|| {
+        VerificationError::invalid_payload("ATA creation is not allowed for native SOL payments")
+    })?;
+    let parsed = ix
+        .get("parsed")
+        .and_then(|parsed| parsed.as_object())
+        .ok_or_else(|| {
+            VerificationError::invalid_payload("ATA creation instruction is missing parsed data")
+        })?;
+    if parsed.get("type").and_then(|ty| ty.as_str()) != Some("createIdempotent") {
+        return Err(VerificationError::invalid_payload(
+            "Only idempotent ATA creation is allowed",
+        ));
+    }
+    let info = parsed
+        .get("info")
+        .and_then(|info| info.as_object())
+        .ok_or_else(|| {
+            VerificationError::invalid_payload("ATA creation parsed instruction is missing info")
+        })?;
+
+    let payer = string_field(info, &["source", "payer"]).ok_or_else(|| {
+        VerificationError::invalid_payload("ATA creation parsed instruction is missing payer")
+    })?;
+    let ata = string_field(
+        info,
+        &["account", "associatedAccount", "associatedTokenAddress"],
+    )
+    .ok_or_else(|| {
+        VerificationError::invalid_payload("ATA creation parsed instruction is missing account")
+    })?;
+    let owner = string_field(info, &["wallet", "owner"]).ok_or_else(|| {
+        VerificationError::invalid_payload("ATA creation parsed instruction is missing owner")
+    })?;
+    let mint = string_field(info, &["mint"]).ok_or_else(|| {
+        VerificationError::invalid_payload("ATA creation parsed instruction is missing mint")
+    })?;
+    let token_program = string_field(info, &["tokenProgram"])
+        .or(expected_token_program)
+        .ok_or_else(|| {
+            VerificationError::invalid_payload(
+                "ATA creation parsed instruction is missing token program",
+            )
+        })?;
+
+    if expected_payer.is_some_and(|expected| payer != expected) {
+        return Err(VerificationError::invalid_payload(
+            "ATA payer must match the transaction fee payer",
+        ));
+    }
+    if mint != expected_mint {
+        return Err(VerificationError::invalid_payload(
+            "ATA creation mint does not match the charge currency",
+        ));
+    }
+    if token_program != programs::TOKEN_PROGRAM && token_program != programs::TOKEN_2022_PROGRAM {
+        return Err(VerificationError::invalid_payload(
+            "ATA creation uses an unsupported token program",
+        ));
+    }
+    if expected_token_program.is_some_and(|expected| token_program != expected) {
+        return Err(VerificationError::invalid_payload(
+            "ATA creation token program does not match methodDetails.tokenProgram",
+        ));
+    }
+    if !verify_ata_owner(ata, owner, mint, token_program) {
+        return Err(VerificationError::invalid_payload(
+            "ATA creation address does not match owner/mint/token program",
+        ));
+    }
+
+    if !allowed_ata_owners.contains(owner) {
+        return Err(VerificationError::invalid_payload(
+            "ATA creation owner is not authorized by the challenge",
+        ));
+    }
+
+    Ok(owner.to_string())
+}
+
+fn string_field<'a>(
+    info: &'a serde_json::Map<String, serde_json::Value>,
+    keys: &[&str],
+) -> Option<&'a str> {
+    keys.iter().find_map(|key| info.get(*key)?.as_str())
+}
+
 /// Best-effort balance check when simulation fails.
 ///
 /// Queries the payer's token balance (USDC) and the fee payer's SOL balance
@@ -1121,7 +1813,7 @@ fn verify_ata_owner(
 /// Never fails — returns an empty string if any RPC call errors.
 fn diagnose_balances(
     rpc: &RpcClient,
-    tx: &Transaction,
+    tx: &VersionedTransaction,
     request: &ChargeRequest,
     method_details: &MethodDetails,
 ) -> String {
@@ -1134,10 +1826,10 @@ fn diagnose_balances(
         .and_then(|k| Pubkey::from_str(k).ok());
     let payer_pk = tx
         .message
-        .account_keys
+        .static_account_keys()
         .iter()
         .find(|k| Some(*k) != fee_payer_pk.as_ref())
-        .or(tx.message.account_keys.first());
+        .or(tx.message.static_account_keys().first());
 
     // Check payer's token balance.
     if let Some(payer) = payer_pk {
@@ -1196,21 +1888,10 @@ fn resolve_expected_mint(
     currency: &str,
     network: Option<&str>,
 ) -> Result<Pubkey, VerificationError> {
-    let mint = match currency.to_uppercase().as_str() {
-        "SOL" => {
-            return Err(VerificationError::invalid_payload(
-                "SOL does not use an SPL mint".to_string(),
-            ));
-        }
-        "USDC" => match network {
-            Some("devnet") => "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
-            _ => "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
-        },
-        "PYUSD" => match network {
-            Some("devnet") => "CXk2AMBfi3TwaEL2468s6zP8xq9NxTXjp9gjMgzeUynM",
-            _ => "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo",
-        },
-        _ => currency,
+    let Some(mint) = crate::protocol::solana::resolve_stablecoin_mint(currency, network) else {
+        return Err(VerificationError::invalid_payload(
+            "SOL does not use an SPL mint".to_string(),
+        ));
     };
 
     Pubkey::from_str(mint)
@@ -1588,7 +2269,7 @@ mod tests {
 
     use solana_hash::Hash;
     use solana_instruction::{AccountMeta, Instruction};
-    use solana_message::Message;
+    use solana_message::{v0, Message, VersionedMessage};
 
     fn system_program_id() -> Pubkey {
         Pubkey::from_str(programs::SYSTEM_PROGRAM).unwrap()
@@ -1608,6 +2289,28 @@ mod tests {
         Instruction {
             program_id: system_program_id(),
             accounts: vec![AccountMeta::new(*from, true), AccountMeta::new(*to, false)],
+            data,
+        }
+    }
+
+    fn compute_unit_limit_ix(units: u32) -> Instruction {
+        let mut data = Vec::with_capacity(5);
+        data.push(2);
+        data.extend_from_slice(&units.to_le_bytes());
+        Instruction {
+            program_id: Pubkey::from_str(COMPUTE_BUDGET_PROGRAM).unwrap(),
+            accounts: vec![],
+            data,
+        }
+    }
+
+    fn compute_unit_price_ix(micro_lamports: u64) -> Instruction {
+        let mut data = Vec::with_capacity(9);
+        data.push(3);
+        data.extend_from_slice(&micro_lamports.to_le_bytes());
+        Instruction {
+            program_id: Pubkey::from_str(COMPUTE_BUDGET_PROGRAM).unwrap(),
+            accounts: vec![],
             data,
         }
     }
@@ -1637,11 +2340,51 @@ mod tests {
         }
     }
 
+    fn create_ata_ix(
+        payer: &Pubkey,
+        owner: &Pubkey,
+        mint: &Pubkey,
+        token_program: &Pubkey,
+    ) -> Instruction {
+        Instruction {
+            program_id: ata_program_id(),
+            accounts: vec![
+                AccountMeta::new(*payer, true),
+                AccountMeta::new(derive_ata(owner, mint, token_program), false),
+                AccountMeta::new_readonly(*owner, false),
+                AccountMeta::new_readonly(*mint, false),
+                AccountMeta::new_readonly(system_program_id(), false),
+                AccountMeta::new_readonly(*token_program, false),
+            ],
+            data: vec![1],
+        }
+    }
+
     fn dummy_tx(instructions: Vec<Instruction>, payer: &Pubkey) -> Transaction {
         let message = Message::new_with_blockhash(&instructions, Some(payer), &Hash::default());
         Transaction {
             signatures: vec![Signature::default(); message.header.num_required_signatures as usize],
             message,
+        }
+    }
+
+    fn dummy_v0_tx(
+        instructions: Vec<Instruction>,
+        payer: &Pubkey,
+        address_table_lookups: Vec<v0::MessageAddressTableLookup>,
+    ) -> VersionedTransaction {
+        let legacy_message =
+            Message::new_with_blockhash(&instructions, Some(payer), &Hash::default());
+        let message = v0::Message {
+            header: legacy_message.header,
+            account_keys: legacy_message.account_keys,
+            recent_blockhash: legacy_message.recent_blockhash,
+            instructions: legacy_message.instructions,
+            address_table_lookups,
+        };
+        VersionedTransaction {
+            signatures: vec![Signature::default(); message.header.num_required_signatures as usize],
+            message: VersionedMessage::V0(message),
         }
     }
 
@@ -1670,6 +2413,46 @@ mod tests {
         let method_details = MethodDetails::default();
 
         assert!(verify_transaction_pre_broadcast(&tx, &request, &method_details).is_ok());
+    }
+
+    #[test]
+    fn v0_sol_transfer_without_lookup_tables_passes() {
+        let sender = Pubkey::new_unique();
+        let recipient = Pubkey::new_unique();
+        let amount = 1_000_000u64;
+
+        let tx = dummy_v0_tx(
+            vec![system_transfer_ix(&sender, &recipient, amount)],
+            &sender,
+            vec![],
+        );
+        let request = charge_request(amount, "SOL", &recipient);
+        let method_details = MethodDetails::default();
+
+        assert!(verify_versioned_transaction_pre_broadcast(&tx, &request, &method_details).is_ok());
+    }
+
+    #[test]
+    fn v0_transactions_with_lookup_tables_rejected() {
+        let sender = Pubkey::new_unique();
+        let recipient = Pubkey::new_unique();
+        let amount = 1_000_000u64;
+
+        let tx = dummy_v0_tx(
+            vec![system_transfer_ix(&sender, &recipient, amount)],
+            &sender,
+            vec![v0::MessageAddressTableLookup {
+                account_key: Pubkey::new_unique(),
+                writable_indexes: vec![0],
+                readonly_indexes: vec![],
+            }],
+        );
+        let request = charge_request(amount, "SOL", &recipient);
+        let method_details = MethodDetails::default();
+
+        let err =
+            verify_versioned_transaction_pre_broadcast(&tx, &request, &method_details).unwrap_err();
+        assert!(err.message.contains("address lookup tables"));
     }
 
     #[test]
@@ -1721,21 +2504,15 @@ mod tests {
     }
 
     #[test]
-    fn sol_transfer_among_other_instructions_passes() {
+    fn sol_transfer_with_valid_compute_budget_passes() {
         let sender = Pubkey::new_unique();
         let recipient = Pubkey::new_unique();
         let amount = 500_000u64;
 
-        // Compute budget + transfer + another random instruction
-        let compute_budget_ix = Instruction {
-            program_id: Pubkey::from_str("ComputeBudget111111111111111111111111111111").unwrap(),
-            accounts: vec![],
-            data: vec![0; 5],
-        };
-
         let tx = dummy_tx(
             vec![
-                compute_budget_ix,
+                compute_unit_price_ix(1),
+                compute_unit_limit_ix(MAX_COMPUTE_UNIT_LIMIT),
                 system_transfer_ix(&sender, &recipient, amount),
             ],
             &sender,
@@ -1744,6 +2521,92 @@ mod tests {
         let method_details = MethodDetails::default();
 
         assert!(verify_transaction_pre_broadcast(&tx, &request, &method_details).is_ok());
+    }
+
+    #[test]
+    fn sol_transfer_with_unmatched_extra_transfer_rejected() {
+        let sender = Pubkey::new_unique();
+        let recipient = Pubkey::new_unique();
+        let attacker = Pubkey::new_unique();
+        let amount = 500_000u64;
+
+        let tx = dummy_tx(
+            vec![
+                system_transfer_ix(&sender, &recipient, amount),
+                system_transfer_ix(&sender, &attacker, 1),
+            ],
+            &sender,
+        );
+        let request = charge_request(amount, "SOL", &recipient);
+        let method_details = MethodDetails::default();
+
+        let err = verify_transaction_pre_broadcast(&tx, &request, &method_details).unwrap_err();
+        assert!(err
+            .message
+            .contains("Unexpected System Program instruction"));
+    }
+
+    #[test]
+    fn compute_unit_price_above_limit_rejected() {
+        let sender = Pubkey::new_unique();
+        let recipient = Pubkey::new_unique();
+        let amount = 500_000u64;
+
+        let tx = dummy_tx(
+            vec![
+                compute_unit_price_ix(MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS + 1),
+                system_transfer_ix(&sender, &recipient, amount),
+            ],
+            &sender,
+        );
+        let request = charge_request(amount, "SOL", &recipient);
+        let method_details = MethodDetails::default();
+
+        let err = verify_transaction_pre_broadcast(&tx, &request, &method_details).unwrap_err();
+        assert!(err.message.contains("Compute unit price"));
+    }
+
+    #[test]
+    fn fee_payer_must_be_transaction_fee_payer() {
+        let sender = Pubkey::new_unique();
+        let fee_payer = Pubkey::new_unique();
+        let recipient = Pubkey::new_unique();
+        let amount = 500_000u64;
+
+        let tx = dummy_tx(
+            vec![system_transfer_ix(&sender, &recipient, amount)],
+            &sender,
+        );
+        let request = charge_request(amount, "SOL", &recipient);
+        let method_details = MethodDetails {
+            fee_payer: Some(true),
+            fee_payer_key: Some(fee_payer.to_string()),
+            ..Default::default()
+        };
+
+        let err = verify_transaction_pre_broadcast(&tx, &request, &method_details).unwrap_err();
+        assert!(err.message.contains("Transaction fee payer must be"));
+    }
+
+    #[test]
+    fn fee_payer_cannot_fund_sol_payment_transfer() {
+        let fee_payer = Pubkey::new_unique();
+        let recipient = Pubkey::new_unique();
+        let amount = 500_000u64;
+
+        let tx = dummy_tx(
+            vec![system_transfer_ix(&fee_payer, &recipient, amount)],
+            &fee_payer,
+        );
+        let request = charge_request(amount, "SOL", &recipient);
+        let method_details = MethodDetails {
+            fee_payer: Some(true),
+            fee_payer_key: Some(fee_payer.to_string()),
+            ..Default::default()
+        };
+
+        let err = verify_transaction_pre_broadcast(&tx, &request, &method_details).unwrap_err();
+        assert!(err.message.contains("Fee payer cannot fund"));
     }
 
     // ── Pre-broadcast SPL verification tests ──
@@ -1835,7 +2698,53 @@ mod tests {
     }
 
     #[test]
-    fn spl_transfer_with_ata_creation_passes() {
+    fn spl_client_paid_split_ata_creation_passes() {
+        let sender = Pubkey::new_unique();
+        let recipient = Pubkey::new_unique();
+        let split_recipient = Pubkey::new_unique();
+        let mint = Pubkey::from_str("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v").unwrap();
+        let primary_amount = 950_000u64;
+        let split_amount = 50_000u64;
+        let total = primary_amount + split_amount;
+
+        let tp = token_program_id();
+        let source_ata = derive_ata(&sender, &mint, &tp);
+        let recipient_ata = derive_ata(&recipient, &mint, &tp);
+        let split_ata = derive_ata(&split_recipient, &mint, &tp);
+
+        let tx = dummy_tx(
+            vec![
+                spl_transfer_checked_ix(
+                    &source_ata,
+                    &mint,
+                    &recipient_ata,
+                    &sender,
+                    primary_amount,
+                    6,
+                ),
+                create_ata_ix(&sender, &split_recipient, &mint, &tp),
+                spl_transfer_checked_ix(&source_ata, &mint, &split_ata, &sender, split_amount, 6),
+            ],
+            &sender,
+        );
+        let request = charge_request(total, &mint.to_string(), &recipient);
+        let method_details = MethodDetails {
+            token_program: Some(programs::TOKEN_PROGRAM.to_string()),
+            splits: Some(vec![Split {
+                recipient: split_recipient.to_string(),
+                amount: split_amount.to_string(),
+                ata_creation_required: None,
+                label: None,
+                memo: None,
+            }]),
+            ..Default::default()
+        };
+
+        assert!(verify_transaction_pre_broadcast(&tx, &request, &method_details).is_ok());
+    }
+
+    #[test]
+    fn spl_client_paid_rejects_top_level_ata_creation() {
         let sender = Pubkey::new_unique();
         let recipient = Pubkey::new_unique();
         let mint = Pubkey::from_str("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v").unwrap();
@@ -1843,33 +2752,202 @@ mod tests {
 
         let tp = token_program_id();
         let source_ata = derive_ata(&sender, &mint, &tp);
-        let dest_ata = derive_ata(&recipient, &mint, &tp);
-
-        // Simulate: create_ata_idempotent + transfer_checked
-        let create_ata_ix = Instruction {
-            program_id: ata_program_id(),
-            accounts: vec![
-                AccountMeta::new(sender, true),
-                AccountMeta::new(dest_ata, false),
-                AccountMeta::new_readonly(recipient, false),
-                AccountMeta::new_readonly(mint, false),
-                AccountMeta::new_readonly(system_program_id(), false),
-                AccountMeta::new_readonly(tp, false),
-            ],
-            data: vec![1], // CreateIdempotent
-        };
+        let recipient_ata = derive_ata(&recipient, &mint, &tp);
 
         let tx = dummy_tx(
             vec![
-                create_ata_ix,
-                spl_transfer_checked_ix(&source_ata, &mint, &dest_ata, &sender, amount, 6),
+                create_ata_ix(&sender, &recipient, &mint, &tp),
+                spl_transfer_checked_ix(&source_ata, &mint, &recipient_ata, &sender, amount, 6),
             ],
             &sender,
         );
-        let request = charge_request(amount, "USDC", &recipient);
-        let method_details = MethodDetails::default();
+        let request = charge_request(amount, &mint.to_string(), &recipient);
+        let method_details = MethodDetails {
+            token_program: Some(programs::TOKEN_PROGRAM.to_string()),
+            ..Default::default()
+        };
+
+        let err = verify_transaction_pre_broadcast(&tx, &request, &method_details).unwrap_err();
+        assert!(err.message.contains("ATA creation owner is not authorized"));
+    }
+
+    #[test]
+    fn spl_fee_payer_split_ata_creation_passes_when_split_requires_it() {
+        let sender = Pubkey::new_unique();
+        let fee_payer = Pubkey::new_unique();
+        let recipient = Pubkey::new_unique();
+        let split_recipient = Pubkey::new_unique();
+        let mint = Pubkey::from_str("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v").unwrap();
+        let primary_amount = 950_000u64;
+        let split_amount = 50_000u64;
+        let total = primary_amount + split_amount;
+
+        let tp = token_program_id();
+        let source_ata = derive_ata(&sender, &mint, &tp);
+        let recipient_ata = derive_ata(&recipient, &mint, &tp);
+        let split_ata = derive_ata(&split_recipient, &mint, &tp);
+
+        let tx = dummy_tx(
+            vec![
+                spl_transfer_checked_ix(
+                    &source_ata,
+                    &mint,
+                    &recipient_ata,
+                    &sender,
+                    primary_amount,
+                    6,
+                ),
+                create_ata_ix(&fee_payer, &split_recipient, &mint, &tp),
+                spl_transfer_checked_ix(&source_ata, &mint, &split_ata, &sender, split_amount, 6),
+            ],
+            &fee_payer,
+        );
+        let request = charge_request(total, &mint.to_string(), &recipient);
+        let method_details = MethodDetails {
+            fee_payer: Some(true),
+            fee_payer_key: Some(fee_payer.to_string()),
+            token_program: Some(programs::TOKEN_PROGRAM.to_string()),
+            splits: Some(vec![Split {
+                recipient: split_recipient.to_string(),
+                amount: split_amount.to_string(),
+                ata_creation_required: Some(true),
+                label: None,
+                memo: None,
+            }]),
+            ..Default::default()
+        };
 
         assert!(verify_transaction_pre_broadcast(&tx, &request, &method_details).is_ok());
+    }
+
+    #[test]
+    fn spl_fee_payer_rejects_top_level_ata_creation() {
+        let sender = Pubkey::new_unique();
+        let fee_payer = Pubkey::new_unique();
+        let recipient = Pubkey::new_unique();
+        let mint = Pubkey::from_str("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v").unwrap();
+        let amount = 1_000_000u64;
+
+        let tp = token_program_id();
+        let source_ata = derive_ata(&sender, &mint, &tp);
+        let recipient_ata = derive_ata(&recipient, &mint, &tp);
+
+        let tx = dummy_tx(
+            vec![
+                create_ata_ix(&fee_payer, &recipient, &mint, &tp),
+                spl_transfer_checked_ix(&source_ata, &mint, &recipient_ata, &sender, amount, 6),
+            ],
+            &fee_payer,
+        );
+        let request = charge_request(amount, &mint.to_string(), &recipient);
+        let method_details = MethodDetails {
+            fee_payer: Some(true),
+            fee_payer_key: Some(fee_payer.to_string()),
+            token_program: Some(programs::TOKEN_PROGRAM.to_string()),
+            ..Default::default()
+        };
+
+        let err = verify_transaction_pre_broadcast(&tx, &request, &method_details).unwrap_err();
+        assert!(err.message.contains("ATA creation owner is not authorized"));
+    }
+
+    #[test]
+    fn spl_fee_payer_split_ata_creation_requires_marked_split_create() {
+        let sender = Pubkey::new_unique();
+        let fee_payer = Pubkey::new_unique();
+        let recipient = Pubkey::new_unique();
+        let split_recipient = Pubkey::new_unique();
+        let mint = Pubkey::from_str("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v").unwrap();
+        let primary_amount = 950_000u64;
+        let split_amount = 50_000u64;
+        let total = primary_amount + split_amount;
+
+        let tp = token_program_id();
+        let source_ata = derive_ata(&sender, &mint, &tp);
+        let recipient_ata = derive_ata(&recipient, &mint, &tp);
+        let split_ata = derive_ata(&split_recipient, &mint, &tp);
+
+        let tx = dummy_tx(
+            vec![
+                spl_transfer_checked_ix(
+                    &source_ata,
+                    &mint,
+                    &recipient_ata,
+                    &sender,
+                    primary_amount,
+                    6,
+                ),
+                spl_transfer_checked_ix(&source_ata, &mint, &split_ata, &sender, split_amount, 6),
+            ],
+            &fee_payer,
+        );
+        let request = charge_request(total, &mint.to_string(), &recipient);
+        let method_details = MethodDetails {
+            fee_payer: Some(true),
+            fee_payer_key: Some(fee_payer.to_string()),
+            token_program: Some(programs::TOKEN_PROGRAM.to_string()),
+            splits: Some(vec![Split {
+                recipient: split_recipient.to_string(),
+                amount: split_amount.to_string(),
+                ata_creation_required: Some(true),
+                label: None,
+                memo: None,
+            }]),
+            ..Default::default()
+        };
+
+        let err = verify_transaction_pre_broadcast(&tx, &request, &method_details).unwrap_err();
+        assert!(err.message.contains("Missing required ATA creation"));
+    }
+
+    #[test]
+    fn spl_split_ata_creation_requires_mint_address_currency() {
+        let sender = Pubkey::new_unique();
+        let fee_payer = Pubkey::new_unique();
+        let recipient = Pubkey::new_unique();
+        let split_recipient = Pubkey::new_unique();
+        let mint = Pubkey::from_str("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v").unwrap();
+        let primary_amount = 950_000u64;
+        let split_amount = 50_000u64;
+        let total = primary_amount + split_amount;
+
+        let tp = token_program_id();
+        let source_ata = derive_ata(&sender, &mint, &tp);
+        let recipient_ata = derive_ata(&recipient, &mint, &tp);
+        let split_ata = derive_ata(&split_recipient, &mint, &tp);
+
+        let tx = dummy_tx(
+            vec![
+                spl_transfer_checked_ix(
+                    &source_ata,
+                    &mint,
+                    &recipient_ata,
+                    &sender,
+                    primary_amount,
+                    6,
+                ),
+                create_ata_ix(&fee_payer, &split_recipient, &mint, &tp),
+                spl_transfer_checked_ix(&source_ata, &mint, &split_ata, &sender, split_amount, 6),
+            ],
+            &fee_payer,
+        );
+        let request = charge_request(total, "USDC", &recipient);
+        let method_details = MethodDetails {
+            fee_payer: Some(true),
+            fee_payer_key: Some(fee_payer.to_string()),
+            token_program: Some(programs::TOKEN_PROGRAM.to_string()),
+            splits: Some(vec![Split {
+                recipient: split_recipient.to_string(),
+                amount: split_amount.to_string(),
+                ata_creation_required: Some(true),
+                label: None,
+                memo: None,
+            }]),
+            ..Default::default()
+        };
+
+        let err = verify_transaction_pre_broadcast(&tx, &request, &method_details).unwrap_err();
+        assert!(err.message.contains("mint address"));
     }
 
     #[test]
@@ -1938,6 +3016,14 @@ mod tests {
             ..Default::default()
         })
         .unwrap()
+    }
+
+    fn test_fee_payer_signer() -> Arc<dyn solana_keychain::SolanaSigner> {
+        let sk = ed25519_dalek::SigningKey::from_bytes(&[7u8; 32]);
+        let mut kp = [0u8; 64];
+        kp[..32].copy_from_slice(sk.as_bytes());
+        kp[32..].copy_from_slice(sk.verifying_key().as_bytes());
+        Arc::new(solana_keychain::MemorySigner::from_bytes(&kp).expect("valid keypair"))
     }
 
     // ── Mpp::new() config validation tests ──
@@ -2171,12 +3257,14 @@ mod tests {
             crate::protocol::solana::Split {
                 recipient: "VendorPayoutsWaLLetxxxxxxxxxxxxxxxxxxxxxx1111".to_string(),
                 amount: "500000".to_string(),
+                ata_creation_required: None,
                 label: None,
                 memo: Some("Vendor payout".to_string()),
             },
             crate::protocol::solana::Split {
                 recipient: "ProcessorFeeWaLLetxxxxxxxxxxxxxxxxxxxxxxx1111".to_string(),
                 amount: "29000".to_string(),
+                ata_creation_required: None,
                 label: None,
                 memo: Some("Processing fee".to_string()),
             },
@@ -2805,6 +3893,7 @@ mod tests {
         let splits = vec![Split {
             recipient: split_recipient.to_string(),
             amount: "200000".to_string(),
+            ata_creation_required: None,
             label: None,
             memo: None,
         }];
@@ -2827,6 +3916,7 @@ mod tests {
         let splits = vec![Split {
             recipient: "SplitRecipient".to_string(),
             amount: "200000".to_string(),
+            ata_creation_required: None,
             label: None,
             memo: None,
         }];
@@ -2863,12 +3953,14 @@ mod tests {
             Split {
                 recipient: "SplitRecipient".to_string(),
                 amount: "100000".to_string(),
+                ata_creation_required: None,
                 label: None,
                 memo: None,
             },
             Split {
                 recipient: "SplitRecipient".to_string(),
                 amount: "100000".to_string(),
+                ata_creation_required: None,
                 label: None,
                 memo: None,
             },
@@ -2912,7 +4004,9 @@ mod tests {
             }
         })];
 
-        assert!(find_spl_transfer(&instructions, owner, mint, 1_000_000, &mut matched).is_ok());
+        assert!(
+            find_spl_transfer(&instructions, owner, mint, 1_000_000, None, &mut matched).is_ok()
+        );
     }
 
     #[test]
@@ -2936,6 +4030,7 @@ mod tests {
             "SomeOwner",
             "SomeMint",
             1_000_000,
+            None,
             &mut matched
         )
         .is_err());
@@ -2962,6 +4057,7 @@ mod tests {
             "SomeOwner",
             "SomeMint",
             1_000_000,
+            None,
             &mut matched
         )
         .is_err());
@@ -2998,9 +4094,15 @@ mod tests {
             }
         })];
 
-        assert!(
-            find_spl_transfer(&instructions, owner, wrong_mint, 1_000_000, &mut matched).is_err()
-        );
+        assert!(find_spl_transfer(
+            &instructions,
+            owner,
+            wrong_mint,
+            1_000_000,
+            None,
+            &mut matched
+        )
+        .is_err());
     }
 
     #[test]
@@ -3057,19 +4159,144 @@ mod tests {
             Split {
                 recipient: split_owner.to_string(),
                 amount: "100000".to_string(),
+                ata_creation_required: None,
                 label: None,
                 memo: None,
             },
             Split {
                 recipient: split_owner.to_string(),
                 amount: "100000".to_string(),
+                ata_creation_required: None,
                 label: None,
                 memo: None,
             },
         ];
 
-        let err = verify_spl_transfers(&instructions, owner, mint, 800000, &splits).unwrap_err();
+        let err =
+            verify_spl_transfers(&instructions, owner, mint, 800000, &splits, None).unwrap_err();
         assert!(err.message.contains("Missing split SPL transfer"));
+    }
+
+    #[test]
+    fn parsed_allowlist_rejects_extra_spl_transfer_after_required_transfer() {
+        let owner = "CXhrFZJLKqjzmP3sjYLcF4dTeXWKCy9e2SXXZ2Yo6MPY";
+        let attacker = Pubkey::new_unique();
+        let mint = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
+        let tp = programs::TOKEN_PROGRAM;
+
+        let owner_pk = Pubkey::from_str(owner).unwrap();
+        let mint_pk = Pubkey::from_str(mint).unwrap();
+        let tp_pk = Pubkey::from_str(tp).unwrap();
+        let owner_ata = derive_ata(&owner_pk, &mint_pk, &tp_pk);
+        let attacker_ata = derive_ata(&attacker, &mint_pk, &tp_pk);
+
+        let instructions = vec![
+            serde_json::json!({
+                "programId": tp,
+                "parsed": {
+                    "type": "transferChecked",
+                    "info": {
+                        "destination": owner_ata.to_string(),
+                        "mint": mint,
+                        "tokenAmount": { "amount": "1000000" }
+                    }
+                }
+            }),
+            serde_json::json!({
+                "programId": tp,
+                "parsed": {
+                    "type": "transferChecked",
+                    "info": {
+                        "destination": attacker_ata.to_string(),
+                        "mint": mint,
+                        "tokenAmount": { "amount": "1" }
+                    }
+                }
+            }),
+        ];
+        let matched =
+            verify_spl_transfers(&instructions, owner, mint, 1_000_000, &[], Some(tp)).unwrap();
+        let allowed_ata_owners = HashSet::from([owner.to_string()]);
+        let required_ata_owners = HashSet::new();
+
+        let err = validate_parsed_instruction_allowlist(
+            &instructions,
+            &matched,
+            Some(mint),
+            &allowed_ata_owners,
+            Some(tp),
+            None,
+            &required_ata_owners,
+        )
+        .unwrap_err();
+        assert!(err.message.contains("Unexpected Token Program instruction"));
+    }
+
+    #[test]
+    fn parsed_allowlist_accepts_required_split_ata_creation() {
+        let payer = Pubkey::new_unique();
+        let split_owner = Pubkey::new_unique();
+        let mint = Pubkey::from_str("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v").unwrap();
+        let tp = token_program_id();
+        let instructions = vec![parsed_ata_create_ix(&payer, &split_owner, &mint, &tp)];
+        let allowed_ata_owners = HashSet::from([split_owner.to_string()]);
+        let required_ata_owners = HashSet::from([split_owner.to_string()]);
+
+        validate_parsed_instruction_allowlist(
+            &instructions,
+            &HashSet::new(),
+            Some(&mint.to_string()),
+            &allowed_ata_owners,
+            Some(programs::TOKEN_PROGRAM),
+            Some(&payer.to_string()),
+            &required_ata_owners,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn parsed_allowlist_rejects_missing_required_split_ata_creation() {
+        let payer = Pubkey::new_unique();
+        let split_owner = Pubkey::new_unique();
+        let mint = Pubkey::from_str("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v").unwrap();
+        let instructions = vec![];
+        let allowed_ata_owners = HashSet::from([split_owner.to_string()]);
+        let required_ata_owners = HashSet::from([split_owner.to_string()]);
+
+        let err = validate_parsed_instruction_allowlist(
+            &instructions,
+            &HashSet::new(),
+            Some(&mint.to_string()),
+            &allowed_ata_owners,
+            Some(programs::TOKEN_PROGRAM),
+            Some(&payer.to_string()),
+            &required_ata_owners,
+        )
+        .unwrap_err();
+        assert!(err.message.contains("Missing required ATA creation"));
+    }
+
+    fn parsed_ata_create_ix(
+        payer: &Pubkey,
+        owner: &Pubkey,
+        mint: &Pubkey,
+        token_program: &Pubkey,
+    ) -> serde_json::Value {
+        serde_json::json!({
+            "program": "spl-associated-token-account",
+            "programId": programs::ASSOCIATED_TOKEN_PROGRAM,
+            "parsed": {
+                "type": "createIdempotent",
+                "info": {
+                    "account": derive_ata(owner, mint, token_program).to_string(),
+                    "mint": mint.to_string(),
+                    "source": payer.to_string(),
+                    "systemProgram": programs::SYSTEM_PROGRAM,
+                    "tokenProgram": token_program.to_string(),
+                    "wallet": owner.to_string()
+                }
+            }
+        })
     }
 
     // ── verify_ata_owner edge cases ──
@@ -3127,6 +4354,7 @@ mod tests {
             splits: Some(vec![Split {
                 recipient: split_recipient.to_string(),
                 amount: split_amount.to_string(),
+                ata_creation_required: None,
                 label: None,
                 memo: None,
             }]),
@@ -3148,6 +4376,7 @@ mod tests {
             splits: Some(vec![Split {
                 recipient: split_recipient.to_string(),
                 amount: "200".to_string(), // exceeds total of 100
+                ata_creation_required: None,
                 label: None,
                 memo: None,
             }]),
@@ -3170,6 +4399,7 @@ mod tests {
             splits: Some(vec![Split {
                 recipient: split_recipient.to_string(),
                 amount: "1000".to_string(), // exactly equals total => primary = 0
+                ata_creation_required: None,
                 label: None,
                 memo: None,
             }]),
@@ -3253,6 +4483,7 @@ mod tests {
             splits: Some(vec![Split {
                 recipient: split_recipient.to_string(),
                 amount: split_amount.to_string(),
+                ata_creation_required: None,
                 label: None,
                 memo: None,
             }]),
@@ -3298,6 +4529,113 @@ mod tests {
         let details: MethodDetails =
             serde_json::from_value(request.method_details.unwrap()).unwrap();
         assert_eq!(details.fee_payer, Some(true));
+    }
+
+    #[test]
+    fn charge_with_split_ata_creation_includes_method_details() {
+        let split_recipient = Pubkey::new_unique();
+        let mpp = Mpp::new(Config {
+            recipient: TEST_RECIPIENT.to_string(),
+            secret_key: Some(TEST_SECRET.to_string()),
+            currency: crate::protocol::solana::mints::USDC_DEVNET.to_string(),
+            fee_payer: true,
+            fee_payer_signer: Some(test_fee_payer_signer()),
+            network: "devnet".to_string(),
+            ..Default::default()
+        })
+        .unwrap();
+        let challenge = mpp
+            .charge_with_options(
+                "1.00",
+                ChargeOptions {
+                    splits: vec![Split {
+                        recipient: split_recipient.to_string(),
+                        amount: "50000".to_string(),
+                        ata_creation_required: Some(true),
+                        label: None,
+                        memo: None,
+                    }],
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        let request: ChargeRequest = challenge.request.decode().unwrap();
+        let details: MethodDetails =
+            serde_json::from_value(request.method_details.unwrap()).unwrap();
+
+        assert_eq!(
+            request.currency,
+            crate::protocol::solana::mints::USDC_DEVNET
+        );
+        assert_eq!(details.fee_payer, Some(true));
+        assert!(details.fee_payer_key.is_some());
+        let splits = details.splits.unwrap();
+        assert_eq!(splits.len(), 1);
+        assert_eq!(splits[0].ata_creation_required, Some(true));
+    }
+
+    #[test]
+    fn charge_variants_with_options_returns_single_challenge() {
+        let split_recipient = Pubkey::new_unique();
+        let mpp = Mpp::new(Config {
+            recipient: TEST_RECIPIENT.to_string(),
+            secret_key: Some(TEST_SECRET.to_string()),
+            currency: crate::protocol::solana::mints::USDC_DEVNET.to_string(),
+            fee_payer: true,
+            fee_payer_signer: Some(test_fee_payer_signer()),
+            network: "devnet".to_string(),
+            ..Default::default()
+        })
+        .unwrap();
+        let challenges = mpp
+            .charge_variants_with_options(
+                "1.00",
+                ChargeOptions {
+                    splits: vec![Split {
+                        recipient: split_recipient.to_string(),
+                        amount: "50000".to_string(),
+                        ata_creation_required: Some(true),
+                        label: None,
+                        memo: None,
+                    }],
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+
+        assert_eq!(challenges.len(), 1);
+    }
+
+    #[test]
+    fn charge_with_split_ata_creation_rejects_symbol_currency() {
+        let split_recipient = Pubkey::new_unique();
+        let mpp = Mpp::new(Config {
+            recipient: TEST_RECIPIENT.to_string(),
+            secret_key: Some(TEST_SECRET.to_string()),
+            currency: "USDC".to_string(),
+            fee_payer: true,
+            fee_payer_signer: Some(test_fee_payer_signer()),
+            network: "devnet".to_string(),
+            ..Default::default()
+        })
+        .unwrap();
+
+        let err = mpp
+            .charge_with_options(
+                "1.00",
+                ChargeOptions {
+                    splits: vec![Split {
+                        recipient: split_recipient.to_string(),
+                        amount: "50000".to_string(),
+                        ata_creation_required: Some(true),
+                        label: None,
+                        memo: None,
+                    }],
+                    ..Default::default()
+                },
+            )
+            .unwrap_err();
+        assert!(err.to_string().contains("mint address"));
     }
 
     // ── Method details include network and decimals ──

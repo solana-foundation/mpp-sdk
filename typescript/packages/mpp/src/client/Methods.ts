@@ -1,4 +1,5 @@
 import { charge as charge_ } from './Charge.js';
+import { selectSolanaChargeChallenge } from './ChallengeSelection.js';
 
 /**
  * Creates a Solana `charge` method for usage on the client.
@@ -19,8 +20,10 @@ import { charge as charge_ } from './Charge.js';
 export const solana: {
     (parameters: solana.Parameters): ReturnType<typeof charge_>;
     charge: typeof charge_;
+    selectChargeChallenge: typeof selectSolanaChargeChallenge;
 } = Object.assign((parameters: solana.Parameters) => charge_(parameters), {
     charge: charge_,
+    selectChargeChallenge: selectSolanaChargeChallenge,
 });
 
 export declare namespace solana {

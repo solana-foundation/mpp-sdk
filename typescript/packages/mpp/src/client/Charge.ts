@@ -27,7 +27,14 @@ import {
 } from '@solana-program/token';
 import { Credential, Method } from 'mppx';
 
-import { ASSOCIATED_TOKEN_PROGRAM, DEFAULT_RPC_URLS, TOKEN_2022_PROGRAM, TOKEN_PROGRAM } from '../constants.js';
+import {
+    ASSOCIATED_TOKEN_PROGRAM,
+    DEFAULT_RPC_URLS,
+    resolveStablecoinMint,
+    SYSTEM_PROGRAM,
+    TOKEN_2022_PROGRAM,
+    TOKEN_PROGRAM,
+} from '../constants.js';
 import * as Methods from '../Methods.js';
 
 /**
@@ -76,7 +83,7 @@ export function charge(parameters: charge.Parameters) {
             } = methodDetails;
 
             // currency is "sol" for native, or the mint address for SPL tokens.
-            const mint = currency !== 'sol' ? currency : undefined;
+            const mint = resolveStablecoinMint(currency, network);
 
             const rpcUrl =
                 parameters.rpcUrl ?? DEFAULT_RPC_URLS[network || 'mainnet-beta'] ?? DEFAULT_RPC_URLS['mainnet-beta'];
@@ -89,11 +96,28 @@ export function charge(parameters: charge.Parameters) {
                 type: 'challenge',
             });
 
-            const useServerFeePayer = serverPaysFees && feePayerKey && !broadcast;
+            if (serverPaysFees && broadcast) {
+                throw new Error('broadcast=true cannot be used with fee sponsorship (feePayer: true)');
+            }
+            if (serverPaysFees && !feePayerKey) {
+                throw new Error('feePayer=true requires feePayerKey in methodDetails');
+            }
+
+            const useServerFeePayer = serverPaysFees === true;
 
             // Compute primary amount (total minus splits).
             const splitsTotal = (splits ?? []).reduce((sum, s) => sum + BigInt(s.amount), 0n);
             const primaryAmount = BigInt(amount) - splitsTotal;
+            if (primaryAmount <= 0n) {
+                throw new Error('Splits consume the entire amount; primary recipient must receive a positive amount');
+            }
+            const hasAtaCreationSplits = splits?.some(split => split.ataCreationRequired === true) === true;
+            if (!mint && hasAtaCreationSplits) {
+                throw new Error('ataCreationRequired requires an SPL token charge');
+            }
+            if (hasAtaCreationSplits && currency !== mint) {
+                throw new Error('ataCreationRequired requires currency to be an SPL token mint address');
+            }
 
             // Build transfer instructions.
             const instructions: Instruction[] = [];
@@ -112,36 +136,48 @@ export function charge(parameters: charge.Parameters) {
                     tokenProgram: tokenProg,
                 });
 
-                // Helper: add ATA creation + transferChecked for a recipient.
-                const addSplTransfer = async (dest: string, transferAmount: bigint) => {
-                    const [destAta] = await findAssociatedTokenPda({
+                const findDestinationAta = async (owner: Address) => {
+                    const [ata] = await findAssociatedTokenPda({
                         mint: mintAddress,
-                        owner: address(dest),
+                        owner,
                         tokenProgram: tokenProg,
                     });
 
-                    // Create destination ATA if it doesn't exist (idempotent).
+                    return ata;
+                };
+
+                const addAtaCreation = async (owner: Address) => {
+                    const ata = await findDestinationAta(owner);
+
                     if (useServerFeePayer) {
                         instructions.push(
                             createAssociatedTokenAccountIdempotent(
-                                address(feePayerKey),
-                                address(dest),
+                                address(feePayerKey!),
+                                owner,
                                 mintAddress,
-                                destAta,
+                                ata,
                                 tokenProg,
                             ),
                         );
                     } else {
                         instructions.push(
                             getCreateAssociatedTokenIdempotentInstruction({
-                                ata: destAta,
+                                ata,
                                 mint: mintAddress,
-                                owner: address(dest),
+                                owner,
                                 payer: signer,
                                 tokenProgram: tokenProg,
                             }),
                         );
                     }
+
+                    return ata;
+                };
+
+                // Helper: add ATA creation + transferChecked for a recipient.
+                const addSplTransfer = async (dest: string, transferAmount: bigint, createAta: boolean) => {
+                    const destOwner = address(dest);
+                    const destAta = createAta ? await addAtaCreation(destOwner) : await findDestinationAta(destOwner);
 
                     instructions.push(
                         getTransferCheckedInstruction(
@@ -158,12 +194,16 @@ export function charge(parameters: charge.Parameters) {
                     );
                 };
 
-                // Primary transfer to recipient.
-                await addSplTransfer(recipient, primaryAmount);
+                // Primary recipient ATA creation is intentionally out of scope.
+                await addSplTransfer(recipient, primaryAmount, false);
 
                 // Split transfers.
                 for (const split of splits ?? []) {
-                    await addSplTransfer(split.recipient, BigInt(split.amount));
+                    await addSplTransfer(
+                        split.recipient,
+                        BigInt(split.amount),
+                        !useServerFeePayer || split.ataCreationRequired === true,
+                    );
                 }
             } else {
                 // ── Native SOL transfers ──
@@ -202,7 +242,7 @@ export function charge(parameters: charge.Parameters) {
                 createTransactionMessage({ version: 0 }),
                 msg =>
                     useServerFeePayer
-                        ? setTransactionMessageFeePayer(address(feePayerKey), msg)
+                        ? setTransactionMessageFeePayer(address(feePayerKey!), msg)
                         : setTransactionMessageFeePayerSigner(signer, msg),
                 msg => setTransactionMessageLifetimeUsingBlockhash(latestBlockhash, msg),
                 msg => appendTransactionMessageInstructions(instructions, msg),
@@ -281,7 +321,7 @@ function createAssociatedTokenAccountIdempotent(
             { address: ata, role: AccountRole.WRITABLE },
             { address: owner, role: AccountRole.READONLY },
             { address: mint, role: AccountRole.READONLY },
-            { address: address('11111111111111111111111111111111'), role: AccountRole.READONLY },
+            { address: address(SYSTEM_PROGRAM), role: AccountRole.READONLY },
             { address: tokenProgram, role: AccountRole.READONLY },
         ],
         data: new Uint8Array([1]),

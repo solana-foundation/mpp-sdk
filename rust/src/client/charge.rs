@@ -13,6 +13,7 @@ use crate::error::Error;
 use crate::protocol::core::{
     format_authorization, parse_www_authenticate, PaymentChallenge, PaymentCredential,
 };
+use crate::protocol::intents::ChargeRequest;
 use crate::protocol::solana::{programs, CredentialPayload, MethodDetails, Split};
 
 /// Build a charge transaction from challenge parameters.
@@ -26,6 +27,43 @@ pub async fn build_charge_transaction(
     currency: &str,
     recipient: &str,
     method_details: &MethodDetails,
+) -> Result<CredentialPayload, Error> {
+    build_charge_transaction_with_options(
+        signer,
+        rpc,
+        amount,
+        currency,
+        recipient,
+        method_details,
+        BuildChargeTransactionOptions::default(),
+    )
+    .await
+}
+
+/// Options for building a Solana charge transaction.
+#[derive(Debug, Clone, Default)]
+pub struct BuildChargeTransactionOptions {}
+
+/// Options for selecting one Solana charge challenge from a challenge set.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct SelectChargeChallengeOptions<'a> {
+    /// Currency symbol or mint address the client wants to pay with.
+    pub currency: Option<&'a str>,
+    /// Currency symbols or mint addresses in client preference order.
+    pub currency_preferences: &'a [&'a str],
+    /// Solana network identifier, e.g. "mainnet-beta", "devnet", or "localnet".
+    pub network: Option<&'a str>,
+}
+
+/// Build a charge transaction from challenge parameters and additional client options.
+pub async fn build_charge_transaction_with_options(
+    signer: &dyn SolanaSigner,
+    rpc: &RpcClient,
+    amount: &str,
+    currency: &str,
+    recipient: &str,
+    method_details: &MethodDetails,
+    _options: BuildChargeTransactionOptions,
 ) -> Result<CredentialPayload, Error> {
     let total_amount: u64 = amount
         .parse()
@@ -69,6 +107,22 @@ pub async fn build_charge_transaction(
     instructions.push(compute_unit_limit_ix(200_000));
 
     let mint = resolve_mint(currency, method_details.network.as_deref());
+    let has_ata_creation_splits = splits
+        .iter()
+        .any(|split| split.ata_creation_required == Some(true));
+
+    if has_ata_creation_splits {
+        let Some(mint_str) = mint else {
+            return Err(Error::Other(
+                "ataCreationRequired requires an SPL token charge".into(),
+            ));
+        };
+        if mint_str != currency {
+            return Err(Error::Other(
+                "ataCreationRequired requires currency to be an SPL token mint address".into(),
+            ));
+        }
+    }
 
     if let Some(mint_str) = mint {
         build_spl_instructions(
@@ -176,6 +230,55 @@ pub fn parse_challenge(header_value: &str) -> Result<PaymentChallenge, Error> {
     parse_www_authenticate(header_value)
 }
 
+/// Select the Solana charge challenge the client should sign.
+///
+/// Servers can return multiple charge challenges for the same resource, for
+/// example one challenge per supported stablecoin. This helper filters by
+/// network and currency preferences while preserving server order otherwise.
+pub fn select_charge_challenge<'a>(
+    challenges: &'a [PaymentChallenge],
+    options: SelectChargeChallengeOptions<'_>,
+) -> Result<Option<&'a PaymentChallenge>, Error> {
+    let mut candidates = Vec::new();
+
+    for challenge in challenges {
+        if !is_solana_charge_challenge_name(challenge) {
+            continue;
+        }
+
+        let (request, method_details) = decode_charge_challenge(challenge)?;
+
+        if !matches_network(&method_details, options.network) {
+            continue;
+        }
+
+        candidates.push((challenge, request, method_details));
+    }
+
+    if options.currency_preferences.is_empty() && options.currency.is_none() {
+        return Ok(candidates.first().map(|(challenge, _, _)| *challenge));
+    }
+
+    for expected in currency_preferences(&options) {
+        for (challenge, request, method_details) in &candidates {
+            if currencies_match(
+                &request.currency,
+                expected,
+                method_details.network.as_deref(),
+            ) {
+                return Ok(Some(*challenge));
+            }
+        }
+    }
+
+    Ok(None)
+}
+
+/// Returns true when a challenge is a schema-valid Solana charge challenge.
+pub fn is_solana_charge_challenge(challenge: &PaymentChallenge) -> bool {
+    is_solana_charge_challenge_name(challenge) && decode_charge_challenge(challenge).is_ok()
+}
+
 // ── Compute budget instructions (inline, no heavy dep) ──
 
 fn compute_unit_price_ix(micro_lamports: u64) -> Instruction {
@@ -232,6 +335,7 @@ fn build_sol_instructions(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_spl_instructions(
     instructions: &mut Vec<Instruction>,
     signer_pubkey: &Pubkey,
@@ -251,30 +355,33 @@ fn build_spl_instructions(
 
     let payer = fee_payer.copied().unwrap_or(*signer_pubkey);
 
-    let mut add_spl_transfer = |dest_owner: &Pubkey, transfer_amount: u64| -> Result<(), Error> {
-        let dest_ata = get_associated_token_address(dest_owner, &mint, &token_program);
+    let mut add_spl_transfer =
+        |dest_owner: &Pubkey, transfer_amount: u64, create_ata: bool| -> Result<(), Error> {
+            let dest_ata = get_associated_token_address(dest_owner, &mint, &token_program);
 
-        instructions.push(create_associated_token_account_idempotent(
-            &payer,
-            dest_owner,
-            &mint,
-            &token_program,
-        ));
+            if create_ata {
+                instructions.push(create_associated_token_account_idempotent(
+                    &payer,
+                    dest_owner,
+                    &mint,
+                    &token_program,
+                ));
+            }
 
-        instructions.push(transfer_checked_ix(
-            &token_program,
-            &source_ata,
-            &mint,
-            &dest_ata,
-            signer_pubkey,
-            transfer_amount,
-            decimals,
-        ));
+            instructions.push(transfer_checked_ix(
+                &token_program,
+                &source_ata,
+                &mint,
+                &dest_ata,
+                signer_pubkey,
+                transfer_amount,
+                decimals,
+            ));
 
-        Ok(())
-    };
+            Ok(())
+        };
 
-    add_spl_transfer(recipient, primary_amount)?;
+    add_spl_transfer(recipient, primary_amount, false)?;
 
     for split in splits {
         let split_recipient = Pubkey::from_str(&split.recipient)
@@ -283,7 +390,11 @@ fn build_spl_instructions(
             .amount
             .parse()
             .map_err(|_| Error::Other(format!("Invalid split amount: {}", split.amount)))?;
-        add_spl_transfer(&split_recipient, split_amount)?;
+        add_spl_transfer(
+            &split_recipient,
+            split_amount,
+            fee_payer.is_none() || split.ata_creation_required == Some(true),
+        )?;
     }
 
     Ok(())
@@ -374,23 +485,61 @@ fn transfer_checked_ix(
 ///
 /// Returns `None` for native SOL, or `Some(mint_address)` for SPL tokens.
 fn resolve_mint<'a>(currency: &'a str, network: Option<&str>) -> Option<&'a str> {
-    match currency.to_uppercase().as_str() {
-        "SOL" => None,
-        "USDC" => Some(match network {
-            Some("devnet") => "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
-            _ => "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
-        }),
-        "PYUSD" => Some(match network {
-            Some("devnet") => "CXk2AMBfi3TwaEL2468s6zP8xq9NxTXjp9gjMgzeUynM",
-            _ => "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo",
-        }),
-        _ => Some(currency),
+    crate::protocol::solana::resolve_stablecoin_mint(currency, network)
+}
+
+fn is_solana_charge_challenge_name(challenge: &PaymentChallenge) -> bool {
+    challenge.method.as_str() == "solana" && challenge.intent.as_str() == "charge"
+}
+
+fn decode_charge_challenge(
+    challenge: &PaymentChallenge,
+) -> Result<(ChargeRequest, MethodDetails), Error> {
+    let request: ChargeRequest = challenge
+        .request
+        .decode()
+        .map_err(|e| Error::Other(format!("Failed to decode challenge request: {e}")))?;
+    if request.recipient.is_none() {
+        return Err(Error::Other("No recipient in challenge".into()));
     }
+    let method_details = request
+        .method_details
+        .as_ref()
+        .ok_or_else(|| Error::Other("Missing methodDetails in challenge".into()))?
+        .clone();
+    let method_details = serde_json::from_value(method_details)
+        .map_err(|e| Error::Other(format!("Invalid method details: {e}")))?;
+    Ok((request, method_details))
+}
+
+fn matches_network(method_details: &MethodDetails, network: Option<&str>) -> bool {
+    match network {
+        None => true,
+        Some(expected) => method_details.network.as_deref().unwrap_or("mainnet-beta") == expected,
+    }
+}
+
+fn currency_preferences<'a>(options: &SelectChargeChallengeOptions<'a>) -> Vec<&'a str> {
+    if !options.currency_preferences.is_empty() {
+        return options.currency_preferences.to_vec();
+    }
+    options.currency.into_iter().collect()
+}
+
+fn currencies_match(
+    challenge_currency: &str,
+    expected_currency: &str,
+    network: Option<&str>,
+) -> bool {
+    crate::protocol::solana::resolve_stablecoin_mint(challenge_currency, network)
+        == crate::protocol::solana::resolve_stablecoin_mint(expected_currency, network)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::protocol::core::Base64UrlJson;
+    use crate::protocol::solana::mints;
 
     #[test]
     fn parse_challenge_from_header() {
@@ -422,6 +571,136 @@ mod tests {
         assert_eq!(req.currency, "USDC");
     }
 
+    fn selection_challenge(
+        id: &str,
+        method: &str,
+        currency: &str,
+        network: &str,
+    ) -> PaymentChallenge {
+        let details = MethodDetails {
+            decimals: Some(6),
+            fee_payer: Some(true),
+            fee_payer_key: Some(RECIPIENT.to_string()),
+            network: Some(network.to_string()),
+            ..Default::default()
+        };
+        let request = ChargeRequest {
+            amount: "1000".to_string(),
+            currency: currency.to_string(),
+            method_details: Some(serde_json::to_value(details).unwrap()),
+            recipient: Some(RECIPIENT.to_string()),
+            ..Default::default()
+        };
+        PaymentChallenge::new(
+            id,
+            "test",
+            method,
+            "charge",
+            Base64UrlJson::from_typed(&request).unwrap(),
+        )
+    }
+
+    #[test]
+    fn select_charge_challenge_selects_first_matching_challenge() {
+        let challenges = vec![
+            selection_challenge("first", "solana", mints::USDC_DEVNET, "devnet"),
+            selection_challenge("second", "solana", mints::USDC_DEVNET, "devnet"),
+        ];
+
+        let selected =
+            select_charge_challenge(&challenges, SelectChargeChallengeOptions::default())
+                .unwrap()
+                .unwrap();
+
+        assert_eq!(selected.id, "first");
+    }
+
+    #[test]
+    fn select_charge_challenge_matches_stablecoin_symbol_to_mint_on_network() {
+        let challenges = vec![selection_challenge(
+            "usdc-devnet",
+            "solana",
+            mints::USDC_DEVNET,
+            "devnet",
+        )];
+
+        let selected = select_charge_challenge(
+            &challenges,
+            SelectChargeChallengeOptions {
+                currency: Some("USDC"),
+                network: Some("devnet"),
+                ..Default::default()
+            },
+        )
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(selected.id, "usdc-devnet");
+    }
+
+    #[test]
+    fn select_charge_challenge_honors_client_currency_preference_order() {
+        let challenges = vec![
+            selection_challenge(
+                "mainnet-usdc",
+                "solana",
+                mints::USDC_MAINNET,
+                "mainnet-beta",
+            ),
+            selection_challenge("devnet-usdc", "solana", mints::USDC_DEVNET, "devnet"),
+        ];
+
+        let selected = select_charge_challenge(
+            &challenges,
+            SelectChargeChallengeOptions {
+                currency_preferences: &[mints::USDC_DEVNET, mints::USDC_MAINNET],
+                ..Default::default()
+            },
+        )
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(selected.id, "devnet-usdc");
+    }
+
+    #[test]
+    fn select_charge_challenge_returns_none_when_no_candidate_matches() {
+        let challenges = vec![
+            selection_challenge("stripe", "stripe", mints::USDC_DEVNET, "devnet"),
+            selection_challenge(
+                "usdc-mainnet",
+                "solana",
+                mints::USDC_MAINNET,
+                "mainnet-beta",
+            ),
+        ];
+
+        let selected = select_charge_challenge(
+            &challenges,
+            SelectChargeChallengeOptions {
+                currency: Some("USDC"),
+                network: Some("devnet"),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        assert!(selected.is_none());
+    }
+
+    #[test]
+    fn is_solana_charge_challenge_rejects_invalid_request() {
+        let challenge = PaymentChallenge::new(
+            "invalid",
+            "test",
+            "solana",
+            "charge",
+            Base64UrlJson::from_value(&serde_json::json!({ "amount": "1000" })).unwrap(),
+        );
+
+        assert!(!is_solana_charge_challenge(&challenge));
+    }
+
     #[test]
     fn resolve_mint_known_symbols() {
         assert_eq!(resolve_mint("SOL", None), None);
@@ -433,6 +712,14 @@ mod tests {
         assert_eq!(
             resolve_mint("USDC", Some("devnet")),
             Some("4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU")
+        );
+        assert_eq!(
+            resolve_mint("USDT", None),
+            Some(crate::protocol::solana::mints::USDT_MAINNET)
+        );
+        assert_eq!(
+            resolve_mint("CASH", None),
+            Some(crate::protocol::solana::mints::CASH_MAINNET)
         );
     }
 
@@ -561,6 +848,7 @@ mod tests {
         let splits = vec![Split {
             recipient: split_recipient.to_string(),
             amount: "500".to_string(),
+            ata_creation_required: None,
             label: None,
             memo: None,
         }];
@@ -577,6 +865,7 @@ mod tests {
         let splits = vec![Split {
             recipient: "not-a-pubkey!!!".to_string(),
             amount: "500".to_string(),
+            ata_creation_required: None,
             label: None,
             memo: None,
         }];
@@ -595,6 +884,7 @@ mod tests {
         let splits = vec![Split {
             recipient: split_recipient.to_string(),
             amount: "not_a_number".to_string(),
+            ata_creation_required: None,
             label: None,
             memo: None,
         }];
@@ -753,6 +1043,7 @@ mod tests {
             splits: Some(vec![Split {
                 recipient: split_addr,
                 amount: "1000".to_string(),
+                ata_creation_required: None,
                 label: None,
                 memo: None,
             }]),
@@ -808,6 +1099,7 @@ mod tests {
             .map(|_| Split {
                 recipient: Pubkey::new_unique().to_string(),
                 amount: "100".to_string(),
+                ata_creation_required: None,
                 label: None,
                 memo: None,
             })
@@ -831,6 +1123,7 @@ mod tests {
             splits: Some(vec![Split {
                 recipient: Pubkey::new_unique().to_string(),
                 amount: "1000000".to_string(), // equals total → primary_amount = 0
+                ata_creation_required: None,
                 label: None,
                 memo: None,
             }]),
@@ -879,6 +1172,76 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn build_charge_with_split_ata_creation() {
+        let signer = make_signer();
+        let rpc = dummy_rpc();
+        let fee_payer = Pubkey::new_unique();
+        let split_recipient = Pubkey::new_unique();
+        let md = MethodDetails {
+            recent_blockhash: Some(ZERO_HASH.to_string()),
+            token_program: Some(programs::TOKEN_PROGRAM.to_string()),
+            decimals: Some(6),
+            fee_payer: Some(true),
+            fee_payer_key: Some(fee_payer.to_string()),
+            splits: Some(vec![Split {
+                recipient: split_recipient.to_string(),
+                amount: "50000".to_string(),
+                ata_creation_required: Some(true),
+                label: None,
+                memo: None,
+            }]),
+            ..Default::default()
+        };
+        let payload = build_charge_transaction_with_options(
+            signer.as_ref(),
+            &rpc,
+            "1000000",
+            USDC_MINT,
+            RECIPIENT,
+            &md,
+            BuildChargeTransactionOptions::default(),
+        )
+        .await
+        .unwrap();
+        assert!(matches!(payload, CredentialPayload::Transaction { .. }));
+    }
+
+    #[tokio::test]
+    async fn build_charge_rejects_split_ata_creation_with_currency_symbol() {
+        let signer = make_signer();
+        let rpc = dummy_rpc();
+        let fee_payer = Pubkey::new_unique();
+        let split_recipient = Pubkey::new_unique();
+        let md = MethodDetails {
+            recent_blockhash: Some(ZERO_HASH.to_string()),
+            token_program: Some(programs::TOKEN_PROGRAM.to_string()),
+            decimals: Some(6),
+            fee_payer: Some(true),
+            fee_payer_key: Some(fee_payer.to_string()),
+            splits: Some(vec![Split {
+                recipient: split_recipient.to_string(),
+                amount: "50000".to_string(),
+                ata_creation_required: Some(true),
+                label: None,
+                memo: None,
+            }]),
+            ..Default::default()
+        };
+        let err = build_charge_transaction_with_options(
+            signer.as_ref(),
+            &rpc,
+            "1000000",
+            "USDC",
+            RECIPIENT,
+            &md,
+            BuildChargeTransactionOptions::default(),
+        )
+        .await
+        .unwrap_err();
+        assert!(format!("{err}").contains("mint address"));
+    }
+
+    #[tokio::test]
     async fn build_charge_invalid_blockhash() {
         let signer = make_signer();
         let rpc = dummy_rpc();
@@ -923,6 +1286,7 @@ mod tests {
             splits: Some(vec![Split {
                 recipient: split_addr,
                 amount: "1000".to_string(),
+                ata_creation_required: None,
                 label: None,
                 memo: None,
             }]),
@@ -1013,8 +1377,7 @@ mod tests {
             None,
         )
         .unwrap();
-        // create_ata + transfer_checked
-        assert_eq!(ixs.len(), 2);
+        assert_eq!(ixs.len(), 1);
     }
 
     #[test]
@@ -1041,9 +1404,7 @@ mod tests {
             Some(&fee_payer),
         )
         .unwrap();
-        assert_eq!(ixs.len(), 2);
-        // create_ata payer account should be the fee_payer.
-        assert_eq!(ixs[0].accounts[0].pubkey, fee_payer);
+        assert_eq!(ixs.len(), 1);
     }
 
     #[test]
@@ -1060,6 +1421,7 @@ mod tests {
         let splits = vec![Split {
             recipient: split_recipient.to_string(),
             amount: "1000".to_string(),
+            ata_creation_required: None,
             label: None,
             memo: None,
         }];
@@ -1068,8 +1430,85 @@ mod tests {
             &mut ixs, &signer_pk, &recipient, &rpc, USDC_MINT, &md, 1_000_000, &splits, None,
         )
         .unwrap();
-        // (create_ata + transfer_checked) × 2 recipients
-        assert_eq!(ixs.len(), 4);
+        // Primary recipient ATA creation is out of scope; split ATA creation is allowed.
+        assert_eq!(ixs.len(), 3);
+    }
+
+    #[test]
+    fn build_spl_with_fee_payer_split_ata_creation() {
+        let signer_pk = Pubkey::new_unique();
+        let recipient = Pubkey::from_str(RECIPIENT).unwrap();
+        let split_recipient = Pubkey::new_unique();
+        let fee_payer = Pubkey::new_unique();
+        let rpc = dummy_rpc();
+        let md = MethodDetails {
+            token_program: Some(programs::TOKEN_PROGRAM.to_string()),
+            decimals: Some(6),
+            fee_payer: Some(true),
+            fee_payer_key: Some(fee_payer.to_string()),
+            ..Default::default()
+        };
+        let splits = vec![Split {
+            recipient: split_recipient.to_string(),
+            amount: "1000".to_string(),
+            ata_creation_required: Some(true),
+            label: None,
+            memo: None,
+        }];
+        let mut ixs = vec![];
+        build_spl_instructions(
+            &mut ixs,
+            &signer_pk,
+            &recipient,
+            &rpc,
+            USDC_MINT,
+            &md,
+            1_000_000,
+            &splits,
+            Some(&fee_payer),
+        )
+        .unwrap();
+
+        assert_eq!(ixs.len(), 3);
+        assert_eq!(ixs[1].accounts[0].pubkey, fee_payer);
+        assert_eq!(ixs[1].accounts[2].pubkey, split_recipient);
+    }
+
+    #[test]
+    fn build_spl_fee_payer_excludes_unmarked_split_ata_creation() {
+        let signer_pk = Pubkey::new_unique();
+        let recipient = Pubkey::from_str(RECIPIENT).unwrap();
+        let split_recipient = Pubkey::new_unique();
+        let fee_payer = Pubkey::new_unique();
+        let rpc = dummy_rpc();
+        let md = MethodDetails {
+            token_program: Some(programs::TOKEN_PROGRAM.to_string()),
+            decimals: Some(6),
+            fee_payer: Some(true),
+            fee_payer_key: Some(fee_payer.to_string()),
+            ..Default::default()
+        };
+        let splits = vec![Split {
+            recipient: split_recipient.to_string(),
+            amount: "1000".to_string(),
+            ata_creation_required: None,
+            label: None,
+            memo: None,
+        }];
+        let mut ixs = vec![];
+        build_spl_instructions(
+            &mut ixs,
+            &signer_pk,
+            &recipient,
+            &rpc,
+            USDC_MINT,
+            &md,
+            1_000_000,
+            &splits,
+            Some(&fee_payer),
+        )
+        .unwrap();
+        assert_eq!(ixs.len(), 2);
     }
 
     #[test]
@@ -1110,6 +1549,7 @@ mod tests {
         let splits = vec![Split {
             recipient: "not-a-pubkey!!!".to_string(),
             amount: "1000".to_string(),
+            ata_creation_required: None,
             label: None,
             memo: None,
         }];
@@ -1135,6 +1575,7 @@ mod tests {
         let splits = vec![Split {
             recipient: split_recipient.to_string(),
             amount: "not-a-number".to_string(),
+            ata_creation_required: None,
             label: None,
             memo: None,
         }];

@@ -143,7 +143,7 @@ pub fn assess_multi_delegate_setup(
     } else {
         let cap_sufficient = state
             .existing_delegation_cap
-            .map_or(false, |cap| cap >= required_cap);
+            .is_some_and(|cap| cap >= required_cap);
 
         if cap_sufficient {
             MultiDelegateSetupAction::AlreadySufficient
@@ -255,6 +255,7 @@ pub fn build_init_multi_delegate_ix(
 /// 4. `system_program` — read-only
 ///
 /// (No optional 6th payer — `delegator` pays rent.)
+#[allow(clippy::too_many_arguments)]
 pub fn build_create_fixed_delegation_ix(
     program_id: &Pubkey,
     delegator: &Pubkey,
