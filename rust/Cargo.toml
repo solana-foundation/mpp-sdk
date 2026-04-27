@@ -99,7 +99,26 @@ serial_test = "3"
 # Dev-only: `solana-sdk` 3.x provides `Keypair`, `Transaction`, and other
 # umbrella re-exports used by the L1 integration tests. Pinned at 3.0
 # (highest published 3.x on crates.io) rather than the 3.1 atomic-crate
-# track to keep the umbrella release tip aligned.
-solana-sdk = { version = "3.0", default-features = false }
+# track to keep the umbrella release tip aligned. The `full` feature gates
+# the `signature::Keypair` / `transaction::Transaction` re-exports the
+# tests use; without it those modules vanish behind `cfg(feature = "full")`.
+solana-sdk = { version = "3.0", default-features = false, features = ["full"] }
 # `ed25519-dalek` is already declared in [dependencies] above (used by the
 # voucher verification path), so it is not re-declared here.
+
+# L1 integration oracle. Loads the program binary into an in-process SVM to
+# exercise SDK-built transactions end-to-end. Upstream's program tests pin
+# `litesvm = "0.11"` and `litesvm-token = "0.11"` in
+# `program/payment_channels/Cargo.toml`; we match those pins so toolchain
+# drift on these deps is bounded by upstream's own choice. The `precompiles`
+# feature on `litesvm` registers the native ed25519 precompile so the
+# Contract 2 oracle can submit a precompile-only tx without loading the
+# program binary.
+litesvm = { version = "0.11", features = ["precompiles"] }
+litesvm-token = "0.11"
+
+# `spl-associated-token-account-client` 2.0 takes/returns `solana_pubkey::Pubkey`
+# at the 2.x major (semver-pinned in its Cargo.toml). Our prod deps pull
+# `solana-pubkey` 3.x; the 2.x line is already in the lockfile transitively, but
+# we need the type in scope at the call site to bridge through bytes.
+solana-pubkey-v2 = { package = "solana-pubkey", version = "2", default-features = false }

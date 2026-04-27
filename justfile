@@ -167,3 +167,19 @@ verify-binary-hash:
         (echo "ERROR: payment_channels.so missing; run 'just fetch-program-binary' first" && exit 1)
     @cd {{REPO_ROOT}}/rust/tests/fixtures && \
         shasum -a 256 -c {{REPO_ROOT}}/rust/src/program/payment_channels/program_binary.sha256
+
+# Run the ed25519 precompile oracle. No program .so fetch required; the test
+# exercises Solana's native ed25519 precompile inside litesvm.
+l1-oracle-ed25519:
+    cd {{REPO_ROOT}}/rust && cargo test --no-default-features --test session_l1_ed25519_oracle -- --nocapture
+
+# Run the open-ix + PDA oracle. Requires the pinned program .so to be fetched
+# into rust/tests/fixtures. The single test is currently #[ignore]'d (pending
+# the upstream splits-canonicalization design that pins OpenArgs and
+# event_authority), so this recipe currently reports "0 run / 1 ignored".
+# Once the design lands and the placeholders go away, strip the #[ignore]
+# attribute on the test and this recipe becomes a real integration check.
+l1-oracle-open:
+    @test -f {{REPO_ROOT}}/rust/tests/fixtures/payment_channels.so || \
+        (echo "ERROR: payment_channels.so missing; run 'just fetch-program-binary' first" && exit 1)
+    cd {{REPO_ROOT}}/rust && cargo test --no-default-features --test session_l1_open_oracle -- --nocapture
