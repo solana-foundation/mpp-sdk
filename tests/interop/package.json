@@ -1,0 +1,23 @@
+{
+  "private": true,
+  "name": "mpp-sdk-interop",
+  "type": "module",
+  "packageManager": "pnpm@10.14.0",
+  "scripts": {
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@solana/kit": "^6.5.0",
+    "@solana/mpp": "file:../../typescript/packages/mpp",
+    "mppx": "^0.5.5",
+    "surfpool-sdk": "^1.2.0"
+  },
+  "devDependencies": {
+    "@types/node": "^25.0.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.0"
+  }
+}

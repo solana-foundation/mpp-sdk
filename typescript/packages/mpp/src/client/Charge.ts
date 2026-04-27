@@ -3,6 +3,7 @@ import {
     type Address,
     address,
     appendTransactionMessageInstructions,
+    type Base64EncodedWireTransaction,
     type Blockhash,
     createSolanaRpc,
     createTransactionMessage,
@@ -27,7 +28,14 @@ import {
 } from '@solana-program/token';
 import { Credential, Method } from 'mppx';
 
-import { ASSOCIATED_TOKEN_PROGRAM, DEFAULT_RPC_URLS, TOKEN_2022_PROGRAM, TOKEN_PROGRAM } from '../constants.js';
+import {
+    ASSOCIATED_TOKEN_PROGRAM,
+    DEFAULT_RPC_URLS,
+    resolveStablecoinMint,
+    SYSTEM_PROGRAM,
+    TOKEN_2022_PROGRAM,
+    TOKEN_PROGRAM,
+} from '../constants.js';
 import * as Methods from '../Methods.js';
 
 /**
@@ -64,166 +72,26 @@ export function charge(parameters: charge.Parameters) {
 
     const method = Method.toClient(Methods.charge, {
         async createCredential({ challenge }) {
-            const { amount, currency, recipient, methodDetails } = challenge.request;
-            const {
-                network,
-                decimals,
-                tokenProgram: tokenProgramAddr,
-                feePayer: serverPaysFees,
-                feePayerKey,
-                recentBlockhash: serverBlockhash,
-                splits,
-            } = methodDetails;
+            const { methodDetails } = challenge.request;
+            const { network, feePayer: serverPaysFees } = methodDetails;
 
-            // currency is "sol" for native, or the mint address for SPL tokens.
-            const mint = currency !== 'sol' ? currency : undefined;
-
-            const rpcUrl =
-                parameters.rpcUrl ?? DEFAULT_RPC_URLS[network || 'mainnet-beta'] ?? DEFAULT_RPC_URLS['mainnet-beta'];
-            const rpc = createSolanaRpc(rpcUrl);
-            onProgress?.({
-                amount,
-                currency,
-                feePayerKey: feePayerKey || undefined,
-                recipient,
-                type: 'challenge',
-            });
-
-            const useServerFeePayer = serverPaysFees && feePayerKey && !broadcast;
-
-            // Compute primary amount (total minus splits).
-            const splitsTotal = (splits ?? []).reduce((sum, s) => sum + BigInt(s.amount), 0n);
-            const primaryAmount = BigInt(amount) - splitsTotal;
-
-            // Build transfer instructions.
-            const instructions: Instruction[] = [];
-
-            if (mint) {
-                // ── SPL token transfers ──
-                const mintAddress = address(mint);
-                const tokenProg = tokenProgramAddr
-                    ? address(tokenProgramAddr)
-                    : await resolveTokenProgram(rpc, mintAddress);
-                const tokenDecimals = decimals ?? 6;
-
-                const [sourceAta] = await findAssociatedTokenPda({
-                    mint: mintAddress,
-                    owner: signer.address,
-                    tokenProgram: tokenProg,
-                });
-
-                // Helper: add ATA creation + transferChecked for a recipient.
-                const addSplTransfer = async (dest: string, transferAmount: bigint) => {
-                    const [destAta] = await findAssociatedTokenPda({
-                        mint: mintAddress,
-                        owner: address(dest),
-                        tokenProgram: tokenProg,
-                    });
-
-                    // Create destination ATA if it doesn't exist (idempotent).
-                    if (useServerFeePayer) {
-                        instructions.push(
-                            createAssociatedTokenAccountIdempotent(
-                                address(feePayerKey),
-                                address(dest),
-                                mintAddress,
-                                destAta,
-                                tokenProg,
-                            ),
-                        );
-                    } else {
-                        instructions.push(
-                            getCreateAssociatedTokenIdempotentInstruction({
-                                ata: destAta,
-                                mint: mintAddress,
-                                owner: address(dest),
-                                payer: signer,
-                                tokenProgram: tokenProg,
-                            }),
-                        );
-                    }
-
-                    instructions.push(
-                        getTransferCheckedInstruction(
-                            {
-                                amount: transferAmount,
-                                authority: signer,
-                                decimals: tokenDecimals,
-                                destination: destAta,
-                                mint: mintAddress,
-                                source: sourceAta,
-                            },
-                            { programAddress: tokenProg },
-                        ),
-                    );
-                };
-
-                // Primary transfer to recipient.
-                await addSplTransfer(recipient, primaryAmount);
-
-                // Split transfers.
-                for (const split of splits ?? []) {
-                    await addSplTransfer(split.recipient, BigInt(split.amount));
-                }
-            } else {
-                // ── Native SOL transfers ──
-                // Primary transfer to recipient.
-                instructions.push(
-                    getTransferSolInstruction({
-                        amount: primaryAmount,
-                        destination: address(recipient),
-                        source: signer,
-                    }),
-                );
-
-                // Split transfers.
-                for (const split of splits ?? []) {
-                    instructions.push(
-                        getTransferSolInstruction({
-                            amount: BigInt(split.amount),
-                            destination: address(split.recipient),
-                            source: signer,
-                        }),
-                    );
-                }
+            if (serverPaysFees && broadcast) {
+                throw new Error('broadcast=true cannot be used with fee sponsorship (feePayer: true)');
             }
-
-            onProgress?.({ type: 'signing' });
-
-            // Use server-provided blockhash if available, otherwise fetch one.
-            const latestBlockhash = serverBlockhash
-                ? {
-                      blockhash: serverBlockhash as Blockhash,
-                      lastValidBlockHeight: BigInt(0), // Server doesn't provide this; tx lifetime is managed by the blockhash itself.
-                  }
-                : (await rpc.getLatestBlockhash().send()).value;
-
-            const txMessage = pipe(
-                createTransactionMessage({ version: 0 }),
-                msg =>
-                    useServerFeePayer
-                        ? setTransactionMessageFeePayer(address(feePayerKey), msg)
-                        : setTransactionMessageFeePayerSigner(signer, msg),
-                msg => setTransactionMessageLifetimeUsingBlockhash(latestBlockhash, msg),
-                msg => appendTransactionMessageInstructions(instructions, msg),
-                // Prepend compute budget instructions per best practice.
-                msg =>
-                    prependTransactionMessageInstructions(
-                        [
-                            getSetComputeUnitPriceInstruction({ microLamports: parameters.computeUnitPrice ?? 1n }),
-                            getSetComputeUnitLimitInstruction({ units: parameters.computeUnitLimit ?? 200_000 }),
-                        ],
-                        msg,
-                    ),
+            const encodedTx = await buildChargeTransaction({
+                computeUnitLimit: parameters.computeUnitLimit,
+                computeUnitPrice: parameters.computeUnitPrice,
+                onProgress,
+                request: challenge.request,
+                rpcUrl:
+                    parameters.rpcUrl ??
+                    DEFAULT_RPC_URLS[network || 'mainnet-beta'] ??
+                    DEFAULT_RPC_URLS['mainnet-beta'],
+                signer,
+            });
+            const rpc = createSolanaRpc(
+                parameters.rpcUrl ?? DEFAULT_RPC_URLS[network || 'mainnet-beta'] ?? DEFAULT_RPC_URLS['mainnet-beta'],
             );
-
-            // When server pays fees, partially sign (only the transfer authority).
-            // The server will add its fee payer signature before broadcasting.
-            const signedTx = useServerFeePayer
-                ? await partiallySignTransactionMessageWithSigners(txMessage)
-                : await signTransactionMessageWithSigners(txMessage);
-
-            const encodedTx = getBase64EncodedWireTransaction(signedTx);
 
             if (broadcast) {
                 // ── Push mode (type="signature") ──
@@ -259,6 +127,203 @@ export function charge(parameters: charge.Parameters) {
     return method;
 }
 
+/**
+ * Builds and signs the Solana transaction for an MPP charge request.
+ *
+ * This is the lower-level client SDK entry point for integrations that already
+ * have a decoded charge request and want the transaction bytes instead of the
+ * full mppx `charge()` method wrapper.
+ */
+export async function buildChargeTransaction(
+    parameters: buildChargeTransaction.Parameters,
+): Promise<Base64EncodedWireTransaction> {
+    const {
+        signer,
+        request: { amount, currency, recipient, methodDetails },
+        onProgress,
+    } = parameters;
+    const {
+        network,
+        decimals,
+        tokenProgram: tokenProgramAddr,
+        feePayer: serverPaysFees,
+        feePayerKey,
+        recentBlockhash: serverBlockhash,
+        splits,
+    } = methodDetails;
+
+    // currency is "sol" for native, or the mint address for SPL tokens.
+    const mint = resolveStablecoinMint(currency, network);
+
+    const rpcUrl = parameters.rpcUrl ?? DEFAULT_RPC_URLS[network || 'mainnet-beta'] ?? DEFAULT_RPC_URLS['mainnet-beta'];
+    const rpc = createSolanaRpc(rpcUrl);
+    onProgress?.({
+        amount,
+        currency,
+        feePayerKey: feePayerKey || undefined,
+        recipient,
+        type: 'challenge',
+    });
+
+    if (serverPaysFees && !feePayerKey) {
+        throw new Error('feePayer=true requires feePayerKey in methodDetails');
+    }
+
+    const useServerFeePayer = serverPaysFees === true;
+
+    // Compute primary amount (total minus splits).
+    const splitsTotal = (splits ?? []).reduce((sum, s) => sum + BigInt(s.amount), 0n);
+    const primaryAmount = BigInt(amount) - splitsTotal;
+    if (primaryAmount <= 0n) {
+        throw new Error('Splits consume the entire amount; primary recipient must receive a positive amount');
+    }
+    const hasAtaCreationSplits = splits?.some(split => split.ataCreationRequired === true) === true;
+    if (!mint && hasAtaCreationSplits) {
+        throw new Error('ataCreationRequired requires an SPL token charge');
+    }
+    if (hasAtaCreationSplits && currency !== mint) {
+        throw new Error('ataCreationRequired requires currency to be an SPL token mint address');
+    }
+
+    // Build transfer instructions.
+    const instructions: Instruction[] = [];
+
+    if (mint) {
+        // ── SPL token transfers ──
+        const mintAddress = address(mint);
+        const tokenProg = tokenProgramAddr ? address(tokenProgramAddr) : await resolveTokenProgram(rpc, mintAddress);
+        const tokenDecimals = decimals ?? 6;
+
+        const [sourceAta] = await findAssociatedTokenPda({
+            mint: mintAddress,
+            owner: signer.address,
+            tokenProgram: tokenProg,
+        });
+
+        const findDestinationAta = async (owner: Address) => {
+            const [ata] = await findAssociatedTokenPda({
+                mint: mintAddress,
+                owner,
+                tokenProgram: tokenProg,
+            });
+
+            return ata;
+        };
+
+        const addAtaCreation = async (owner: Address) => {
+            const ata = await findDestinationAta(owner);
+
+            if (useServerFeePayer) {
+                instructions.push(
+                    createAssociatedTokenAccountIdempotent(address(feePayerKey!), owner, mintAddress, ata, tokenProg),
+                );
+            } else {
+                instructions.push(
+                    getCreateAssociatedTokenIdempotentInstruction({
+                        ata,
+                        mint: mintAddress,
+                        owner,
+                        payer: signer,
+                        tokenProgram: tokenProg,
+                    }),
+                );
+            }
+
+            return ata;
+        };
+
+        // Helper: add ATA creation + transferChecked for a recipient.
+        const addSplTransfer = async (dest: string, transferAmount: bigint, createAta: boolean) => {
+            const destOwner = address(dest);
+            const destAta = createAta ? await addAtaCreation(destOwner) : await findDestinationAta(destOwner);
+
+            instructions.push(
+                getTransferCheckedInstruction(
+                    {
+                        amount: transferAmount,
+                        authority: signer,
+                        decimals: tokenDecimals,
+                        destination: destAta,
+                        mint: mintAddress,
+                        source: sourceAta,
+                    },
+                    { programAddress: tokenProg },
+                ),
+            );
+        };
+
+        // Primary recipient ATA creation is intentionally out of scope.
+        await addSplTransfer(recipient, primaryAmount, false);
+
+        // Split transfers.
+        for (const split of splits ?? []) {
+            await addSplTransfer(
+                split.recipient,
+                BigInt(split.amount),
+                !useServerFeePayer || split.ataCreationRequired === true,
+            );
+        }
+    } else {
+        // ── Native SOL transfers ──
+        // Primary transfer to recipient.
+        instructions.push(
+            getTransferSolInstruction({
+                amount: primaryAmount,
+                destination: address(recipient),
+                source: signer,
+            }),
+        );
+
+        // Split transfers.
+        for (const split of splits ?? []) {
+            instructions.push(
+                getTransferSolInstruction({
+                    amount: BigInt(split.amount),
+                    destination: address(split.recipient),
+                    source: signer,
+                }),
+            );
+        }
+    }
+
+    onProgress?.({ type: 'signing' });
+
+    // Use server-provided blockhash if available, otherwise fetch one.
+    const latestBlockhash = serverBlockhash
+        ? {
+              blockhash: serverBlockhash as Blockhash,
+              lastValidBlockHeight: BigInt(0), // Server doesn't provide this; tx lifetime is managed by the blockhash itself.
+          }
+        : (await rpc.getLatestBlockhash().send()).value;
+
+    const txMessage = pipe(
+        createTransactionMessage({ version: 0 }),
+        msg =>
+            useServerFeePayer
+                ? setTransactionMessageFeePayer(address(feePayerKey!), msg)
+                : setTransactionMessageFeePayerSigner(signer, msg),
+        msg => setTransactionMessageLifetimeUsingBlockhash(latestBlockhash, msg),
+        msg => appendTransactionMessageInstructions(instructions, msg),
+        // Prepend compute budget instructions per best practice.
+        msg =>
+            prependTransactionMessageInstructions(
+                [
+                    getSetComputeUnitPriceInstruction({ microLamports: parameters.computeUnitPrice ?? 1n }),
+                    getSetComputeUnitLimitInstruction({ units: parameters.computeUnitLimit ?? 200_000 }),
+                ],
+                msg,
+            ),
+    );
+
+    // When server pays fees, partially sign (only the transfer authority).
+    // The server will add its fee payer signature before broadcasting.
+    const signedTx = useServerFeePayer
+        ? await partiallySignTransactionMessageWithSigners(txMessage)
+        : await signTransactionMessageWithSigners(txMessage);
+
+    return getBase64EncodedWireTransaction(signedTx);
+}
+
 // ── Helpers ──
 
 /**
@@ -281,7 +346,7 @@ function createAssociatedTokenAccountIdempotent(
             { address: ata, role: AccountRole.WRITABLE },
             { address: owner, role: AccountRole.READONLY },
             { address: mint, role: AccountRole.READONLY },
-            { address: address('11111111111111111111111111111111'), role: AccountRole.READONLY },
+            { address: address(SYSTEM_PROGRAM), role: AccountRole.READONLY },
             { address: tokenProgram, role: AccountRole.READONLY },
         ],
         data: new Uint8Array([1]),
@@ -367,4 +432,44 @@ export declare namespace charge {
         | { transaction: string; type: 'signed' }
         | { type: 'paying' }
         | { type: 'signing' };
+}
+
+export declare namespace buildChargeTransaction {
+    type Parameters = {
+        /** Compute unit limit. Defaults to 200,000. */
+        computeUnitLimit?: number;
+        /** Compute unit price in micro-lamports for priority fees. Defaults to 1. */
+        computeUnitPrice?: bigint;
+        /** Called at each step of the payment build/signing process. */
+        onProgress?: (
+            event:
+                | {
+                      amount: string;
+                      currency: string;
+                      feePayerKey?: string;
+                      recipient: string;
+                      type: 'challenge';
+                  }
+                | { type: 'signing' },
+        ) => void;
+        /** Decoded request from a Solana MPP charge challenge. */
+        request: {
+            amount: string;
+            currency: string;
+            methodDetails: {
+                decimals?: number;
+                feePayer?: boolean;
+                feePayerKey?: string;
+                network?: string;
+                recentBlockhash?: string;
+                splits?: Array<{ amount: string; ataCreationRequired?: boolean; memo?: string; recipient: string }>;
+                tokenProgram?: string;
+            };
+            recipient: string;
+        };
+        /** Custom RPC URL. If not set, inferred from the request network field. */
+        rpcUrl?: string;
+        /** Solana transaction signer. */
+        signer: TransactionSigner;
+    };
 }

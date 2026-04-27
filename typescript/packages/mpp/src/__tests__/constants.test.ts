@@ -3,11 +3,18 @@
  */
 import {
     ASSOCIATED_TOKEN_PROGRAM,
+    CASH,
+    COMPUTE_BUDGET_PROGRAM,
     DEFAULT_RPC_URLS,
+    PYUSD,
     SYSTEM_PROGRAM,
     TOKEN_2022_PROGRAM,
     TOKEN_PROGRAM,
     USDC,
+    USDT,
+    defaultTokenProgramForCurrency,
+    resolveStablecoinMint,
+    stablecoinSymbolForCurrency,
 } from '../constants.js';
 
 describe('token program addresses', () => {
@@ -26,6 +33,10 @@ describe('token program addresses', () => {
     test('SYSTEM_PROGRAM is all ones', () => {
         expect(SYSTEM_PROGRAM).toBe('11111111111111111111111111111111');
     });
+
+    test('COMPUTE_BUDGET_PROGRAM is the expected base58 address', () => {
+        expect(COMPUTE_BUDGET_PROGRAM).toBe('ComputeBudget111111111111111111111111111111');
+    });
 });
 
 describe('USDC mint addresses', () => {
@@ -35,6 +46,45 @@ describe('USDC mint addresses', () => {
 
     test('has mainnet-beta mint', () => {
         expect(USDC['mainnet-beta']).toBe('EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v');
+    });
+});
+
+describe('stablecoin mint addresses', () => {
+    test('has USDT mainnet mint', () => {
+        expect(USDT['mainnet-beta']).toBe('Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB');
+    });
+
+    test('has PYUSD mints', () => {
+        expect(PYUSD.devnet).toBe('CXk2AMBfi3TwaEL2468s6zP8xq9NxTXjp9gjMgzeUynM');
+        expect(PYUSD['mainnet-beta']).toBe('2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo');
+    });
+
+    test('has Phantom CASH mainnet mint', () => {
+        expect(CASH['mainnet-beta']).toBe('CASHx9KJUStyftLFWGvEVf59SGeG9sh5FfcnZMVPCASH');
+    });
+
+    test('resolves stablecoin symbols by network', () => {
+        expect(resolveStablecoinMint('USDC', 'devnet')).toBe(USDC.devnet);
+        expect(resolveStablecoinMint('USDT', 'mainnet-beta')).toBe(USDT['mainnet-beta']);
+        expect(resolveStablecoinMint('PYUSD', 'devnet')).toBe(PYUSD.devnet);
+        expect(resolveStablecoinMint('CASH', 'mainnet-beta')).toBe(CASH['mainnet-beta']);
+        expect(resolveStablecoinMint('SOL')).toBeUndefined();
+        expect(resolveStablecoinMint('CustomMint111111111111111111111111111111')).toBe(
+            'CustomMint111111111111111111111111111111',
+        );
+    });
+
+    test('detects stablecoin display symbols', () => {
+        expect(stablecoinSymbolForCurrency(PYUSD['mainnet-beta'])).toBe('PYUSD');
+        expect(stablecoinSymbolForCurrency(CASH['mainnet-beta'])).toBe('CASH');
+        expect(stablecoinSymbolForCurrency('CASH')).toBe('CASH');
+        expect(stablecoinSymbolForCurrency('CustomMint111111111111111111111111111111')).toBeUndefined();
+    });
+
+    test('defaults Phantom CASH to Token-2022', () => {
+        expect(defaultTokenProgramForCurrency('CASH')).toBe(TOKEN_2022_PROGRAM);
+        expect(defaultTokenProgramForCurrency(CASH['mainnet-beta'])).toBe(TOKEN_2022_PROGRAM);
+        expect(defaultTokenProgramForCurrency('USDC')).toBe(TOKEN_PROGRAM);
     });
 });
 

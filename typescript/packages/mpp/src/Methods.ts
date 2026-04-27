@@ -52,6 +52,8 @@ export const charge = Method.from({
                         z.object({
                             /** Amount in base units (same asset as primary). */
                             amount: z.string(),
+                            /** If true, the split recipient ATA must be created idempotently before payment. */
+                            ataCreationRequired: z.optional(z.boolean()),
                             /** Optional memo for this split (max 566 bytes). */
                             memo: z.optional(z.string()),
                             /** Base58-encoded recipient of this split. */
@@ -59,7 +61,7 @@ export const charge = Method.from({
                         }),
                     ),
                 ),
-                /** Token program address (TOKEN_PROGRAM or TOKEN_2022_PROGRAM). Defaults to TOKEN_PROGRAM. */
+                /** Token program address (TOKEN_PROGRAM or TOKEN_2022_PROGRAM). Defaults from the currency mint. */
                 tokenProgram: z.optional(z.string()),
             }),
             /** Base58-encoded recipient public key. */

@@ -7,7 +7,20 @@ pub mod programs {
     pub const TOKEN_PROGRAM: &str = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
     pub const TOKEN_2022_PROGRAM: &str = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb";
     pub const ASSOCIATED_TOKEN_PROGRAM: &str = "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL";
+    pub const COMPUTE_BUDGET_PROGRAM: &str = "ComputeBudget111111111111111111111111111111";
     pub const SYSTEM_PROGRAM: &str = "11111111111111111111111111111111";
+}
+
+/// Well-known stablecoin mint addresses.
+pub mod mints {
+    pub const USDC_MAINNET: &str = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
+    pub const USDC_DEVNET: &str = "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU";
+    pub const USDC_TESTNET: &str = USDC_DEVNET;
+    pub const USDT_MAINNET: &str = "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB";
+    pub const PYUSD_MAINNET: &str = "2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo";
+    pub const PYUSD_DEVNET: &str = "CXk2AMBfi3TwaEL2468s6zP8xq9NxTXjp9gjMgzeUynM";
+    pub const PYUSD_TESTNET: &str = PYUSD_DEVNET;
+    pub const CASH_MAINNET: &str = "CASHx9KJUStyftLFWGvEVf59SGeG9sh5FfcnZMVPCASH";
 }
 
 /// Default RPC URLs per network.
@@ -16,6 +29,36 @@ pub fn default_rpc_url(network: &str) -> &'static str {
         "devnet" => "https://api.devnet.solana.com",
         "localnet" => "http://localhost:8899",
         _ => "https://api.mainnet-beta.solana.com",
+    }
+}
+
+/// Resolve a stablecoin symbol to a mint address for a network.
+///
+/// Returns `None` for native SOL and passes through unknown symbols/mints.
+pub fn resolve_stablecoin_mint<'a>(currency: &'a str, network: Option<&str>) -> Option<&'a str> {
+    match currency.to_uppercase().as_str() {
+        "SOL" => None,
+        "USDC" => Some(match network {
+            Some("devnet") => mints::USDC_DEVNET,
+            Some("testnet") => mints::USDC_TESTNET,
+            _ => mints::USDC_MAINNET,
+        }),
+        "USDT" => Some(mints::USDT_MAINNET),
+        "PYUSD" => Some(match network {
+            Some("devnet") => mints::PYUSD_DEVNET,
+            Some("testnet") => mints::PYUSD_TESTNET,
+            _ => mints::PYUSD_MAINNET,
+        }),
+        "CASH" => Some(mints::CASH_MAINNET),
+        _ => Some(currency),
+    }
+}
+
+/// Default token program for a currency or mint.
+pub fn default_token_program_for_currency(currency: &str, network: Option<&str>) -> &'static str {
+    match resolve_stablecoin_mint(currency, network) {
+        Some(mint) if mint == mints::CASH_MAINNET => programs::TOKEN_2022_PROGRAM,
+        _ => programs::TOKEN_PROGRAM,
     }
 }
 
@@ -64,6 +107,7 @@ mod tests {
         assert!(Pubkey::from_str(programs::TOKEN_PROGRAM).is_ok());
         assert!(Pubkey::from_str(programs::TOKEN_2022_PROGRAM).is_ok());
         assert!(Pubkey::from_str(programs::ASSOCIATED_TOKEN_PROGRAM).is_ok());
+        assert!(Pubkey::from_str(programs::COMPUTE_BUDGET_PROGRAM).is_ok());
         assert!(Pubkey::from_str(programs::SYSTEM_PROGRAM).is_ok());
     }
 
@@ -73,6 +117,7 @@ mod tests {
             programs::TOKEN_PROGRAM,
             programs::TOKEN_2022_PROGRAM,
             programs::ASSOCIATED_TOKEN_PROGRAM,
+            programs::COMPUTE_BUDGET_PROGRAM,
             programs::SYSTEM_PROGRAM,
         ];
         for (i, a) in all.iter().enumerate() {
@@ -82,6 +127,61 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn stablecoin_mint_constants_are_valid_pubkeys() {
+        use solana_pubkey::Pubkey;
+        use std::str::FromStr;
+
+        assert!(Pubkey::from_str(mints::USDC_MAINNET).is_ok());
+        assert!(Pubkey::from_str(mints::USDC_DEVNET).is_ok());
+        assert!(Pubkey::from_str(mints::USDT_MAINNET).is_ok());
+        assert!(Pubkey::from_str(mints::PYUSD_MAINNET).is_ok());
+        assert!(Pubkey::from_str(mints::PYUSD_DEVNET).is_ok());
+        assert!(Pubkey::from_str(mints::CASH_MAINNET).is_ok());
+    }
+
+    #[test]
+    fn resolve_stablecoin_mints_by_network() {
+        assert_eq!(resolve_stablecoin_mint("SOL", None), None);
+        assert_eq!(
+            resolve_stablecoin_mint("USDC", None),
+            Some(mints::USDC_MAINNET)
+        );
+        assert_eq!(
+            resolve_stablecoin_mint("USDC", Some("devnet")),
+            Some(mints::USDC_DEVNET)
+        );
+        assert_eq!(
+            resolve_stablecoin_mint("USDT", None),
+            Some(mints::USDT_MAINNET)
+        );
+        assert_eq!(
+            resolve_stablecoin_mint("PYUSD", Some("devnet")),
+            Some(mints::PYUSD_DEVNET)
+        );
+        assert_eq!(
+            resolve_stablecoin_mint("CASH", None),
+            Some(mints::CASH_MAINNET)
+        );
+        assert_eq!(resolve_stablecoin_mint("custom", None), Some("custom"));
+    }
+
+    #[test]
+    fn cash_defaults_to_token_2022() {
+        assert_eq!(
+            default_token_program_for_currency("CASH", None),
+            programs::TOKEN_2022_PROGRAM
+        );
+        assert_eq!(
+            default_token_program_for_currency(mints::CASH_MAINNET, None),
+            programs::TOKEN_2022_PROGRAM
+        );
+        assert_eq!(
+            default_token_program_for_currency("USDC", None),
+            programs::TOKEN_PROGRAM
+        );
     }
 
     // ── MethodDetails serde ──
@@ -109,6 +209,7 @@ mod tests {
             splits: Some(vec![Split {
                 recipient: "Recipient1".to_string(),
                 amount: "100".to_string(),
+                ata_creation_required: Some(true),
                 label: None,
                 memo: Some("test memo".to_string()),
             }]),
@@ -120,6 +221,10 @@ mod tests {
         assert_eq!(deserialized.decimals, Some(6));
         assert_eq!(deserialized.fee_payer, Some(true));
         assert_eq!(deserialized.splits.as_ref().unwrap().len(), 1);
+        assert_eq!(
+            deserialized.splits.as_ref().unwrap()[0].ata_creation_required,
+            Some(true)
+        );
         assert_eq!(
             deserialized.splits.as_ref().unwrap()[0].memo.as_deref(),
             Some("test memo")
@@ -176,6 +281,7 @@ mod tests {
         let split = Split {
             recipient: "R1".to_string(),
             amount: "500".to_string(),
+            ata_creation_required: None,
             label: None,
             memo: Some("tip".to_string()),
         };
@@ -190,11 +296,27 @@ mod tests {
         let split = Split {
             recipient: "R1".to_string(),
             amount: "500".to_string(),
+            ata_creation_required: None,
             label: None,
             memo: None,
         };
         let json = serde_json::to_string(&split).unwrap();
         assert!(!json.contains("memo"));
+    }
+
+    #[test]
+    fn split_serde_with_ata_creation_required() {
+        let split = Split {
+            recipient: "R1".to_string(),
+            amount: "500".to_string(),
+            ata_creation_required: Some(true),
+            label: None,
+            memo: None,
+        };
+        let json = serde_json::to_string(&split).unwrap();
+        assert!(json.contains("\"ataCreationRequired\":true"));
+        let deserialized: Split = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.ata_creation_required, Some(true));
     }
 }
 
@@ -235,6 +357,12 @@ pub struct Split {
     pub recipient: String,
     /// Amount in base units.
     pub amount: String,
+    /// Whether this split recipient ATA must be created idempotently before payment.
+    #[serde(
+        rename = "ataCreationRequired",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub ata_creation_required: Option<bool>,
     /// Human-readable label for the recipient (e.g. "Vendor", "Tax Authority").
     #[serde(skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,

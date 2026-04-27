@@ -7,17 +7,34 @@
  */
 import { test, expect, beforeEach, afterEach } from 'vitest';
 import { Store } from 'mppx/server';
-import { findAssociatedTokenPda } from '@solana-program/token';
-import { address } from '@solana/kit';
+import { getTransferSolInstruction } from '@solana-program/system';
+import { findAssociatedTokenPda, getTransferCheckedInstruction } from '@solana-program/token';
+import {
+    AccountRole,
+    type Address,
+    address,
+    appendTransactionMessageInstructions,
+    createTransactionMessage,
+    generateKeyPairSigner,
+    getBase64EncodedWireTransaction,
+    type Instruction,
+    partiallySignTransactionMessageWithSigners,
+    pipe,
+    setTransactionMessageFeePayer,
+    setTransactionMessageFeePayerSigner,
+    setTransactionMessageLifetimeUsingBlockhash,
+    type Blockhash,
+} from '@solana/kit';
+import { buildChargeTransaction } from '../client/Charge.js';
 import { charge } from '../server/Charge.js';
-import { TOKEN_PROGRAM } from '../constants.js';
+import { ASSOCIATED_TOKEN_PROGRAM, CASH, SYSTEM_PROGRAM, TOKEN_2022_PROGRAM, TOKEN_PROGRAM } from '../constants.js';
 
 // ── Fixtures ──
 
 const RECIPIENT = '9xAXssX9j7vuK99c7cFwqbixzL3bFrzPy9PUhCtDPAYJ';
 const USDC_MINT = '4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU';
 const SIGNATURE = '5UfDuX6nSqMzMR8W7n6K3b1GKLmaqEisBFCcYPRLjNHrCbVQJF3BVjkE7aQJMQ2Kx';
-const FAKE_TX_BASE64 = 'AQAAAA...'; // Placeholder base64-encoded signed tx
+const BLOCKHASH = 'EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N' as Blockhash;
 
 /** Build a push mode credential (type="signature"). */
 function signatureCredential(
@@ -28,7 +45,9 @@ function signatureCredential(
         recipient?: string;
         decimals?: number;
         tokenProgram?: string;
-        splits?: Array<{ recipient: string; amount: string; memo?: string }>;
+        feePayer?: boolean;
+        feePayerKey?: string;
+        splits?: Array<{ recipient: string; amount: string; ataCreationRequired?: boolean; memo?: string }>;
     } = {},
 ) {
     const curr = overrides.currency ?? 'sol';
@@ -48,6 +67,8 @@ function signatureCredential(
                               tokenProgram: overrides.tokenProgram ?? TOKEN_PROGRAM,
                           }
                         : {}),
+                    ...(overrides.feePayer !== undefined ? { feePayer: overrides.feePayer } : {}),
+                    ...(overrides.feePayerKey ? { feePayerKey: overrides.feePayerKey } : {}),
                     ...(overrides.splits ? { splits: overrides.splits } : {}),
                 },
             },
@@ -64,6 +85,9 @@ function transactionCredential(
         recipient?: string;
         decimals?: number;
         tokenProgram?: string;
+        feePayer?: boolean;
+        feePayerKey?: string;
+        splits?: Array<{ recipient: string; amount: string; ataCreationRequired?: boolean; memo?: string }>;
     } = {},
 ) {
     const curr = overrides.currency ?? 'sol';
@@ -83,10 +107,161 @@ function transactionCredential(
                               tokenProgram: overrides.tokenProgram ?? TOKEN_PROGRAM,
                           }
                         : {}),
+                    ...(overrides.feePayer !== undefined ? { feePayer: overrides.feePayer } : {}),
+                    ...(overrides.feePayerKey ? { feePayerKey: overrides.feePayerKey } : {}),
+                    ...(overrides.splits ? { splits: overrides.splits } : {}),
                 },
             },
         },
     } as any;
+}
+
+async function buildSolPaymentTxBase64(destination: string, lamports: string | number) {
+    const payer = await generateKeyPairSigner();
+    const txMessage = pipe(
+        createTransactionMessage({ version: 0 }),
+        msg => setTransactionMessageFeePayerSigner(payer, msg),
+        msg => setTransactionMessageLifetimeUsingBlockhash({ blockhash: BLOCKHASH, lastValidBlockHeight: 1n }, msg),
+        msg =>
+            appendTransactionMessageInstructions(
+                [
+                    getTransferSolInstruction({
+                        source: payer,
+                        destination: address(destination),
+                        amount: BigInt(lamports),
+                    }),
+                ],
+                msg,
+            ),
+    );
+
+    return getBase64EncodedWireTransaction(await partiallySignTransactionMessageWithSigners(txMessage));
+}
+
+async function buildSplPaymentTxBase64(
+    destinationOwner: string,
+    mint: string,
+    amount: string | number,
+    decimals = 6,
+    tokenProgram = TOKEN_PROGRAM,
+    options: {
+        extraAtaOwners?: string[];
+        feePayerKey?: string;
+        skipAtaCreationFor?: string[];
+        splits?: Array<{ recipient: string; amount: string; ataCreationRequired?: boolean }>;
+    } = {},
+) {
+    const payer = await generateKeyPairSigner();
+    const mintAddress = address(mint);
+    const tokenProgramAddress = address(tokenProgram);
+    const [sourceAta] = await findAssociatedTokenPda({
+        owner: payer.address,
+        mint: mintAddress,
+        tokenProgram: tokenProgramAddress,
+    });
+    const [destinationAta] = await findAssociatedTokenPda({
+        owner: address(destinationOwner),
+        mint: mintAddress,
+        tokenProgram: tokenProgramAddress,
+    });
+
+    const instructionPayer = options.feePayerKey ? address(options.feePayerKey) : payer.address;
+    const instructions: Instruction[] = [];
+    const shouldSkipAtaCreation = (owner: string) => options.skipAtaCreationFor?.includes(owner) === true;
+    instructions.push(
+        getTransferCheckedInstruction(
+            {
+                source: sourceAta,
+                mint: mintAddress,
+                destination: destinationAta,
+                authority: payer,
+                amount: BigInt(amount),
+                decimals,
+            },
+            { programAddress: tokenProgramAddress },
+        ),
+    );
+
+    for (const split of options.splits ?? []) {
+        const splitOwner = address(split.recipient);
+        const [splitAta] = await findAssociatedTokenPda({
+            owner: splitOwner,
+            mint: mintAddress,
+            tokenProgram: tokenProgramAddress,
+        });
+        if ((!options.feePayerKey || split.ataCreationRequired === true) && !shouldSkipAtaCreation(split.recipient)) {
+            instructions.push(
+                await createAssociatedTokenAccountIdempotent(
+                    instructionPayer,
+                    splitOwner,
+                    mintAddress,
+                    tokenProgramAddress,
+                ),
+            );
+        }
+        instructions.push(
+            getTransferCheckedInstruction(
+                {
+                    source: sourceAta,
+                    mint: mintAddress,
+                    destination: splitAta,
+                    authority: payer,
+                    amount: BigInt(split.amount),
+                    decimals,
+                },
+                { programAddress: tokenProgramAddress },
+            ),
+        );
+    }
+
+    for (const owner of options.extraAtaOwners ?? []) {
+        instructions.push(
+            await createAssociatedTokenAccountIdempotent(
+                instructionPayer,
+                address(owner),
+                mintAddress,
+                tokenProgramAddress,
+            ),
+        );
+    }
+
+    const txMessage = pipe(
+        createTransactionMessage({ version: 0 }),
+        msg =>
+            options.feePayerKey
+                ? setTransactionMessageFeePayer(address(options.feePayerKey), msg)
+                : setTransactionMessageFeePayerSigner(payer, msg),
+        msg => setTransactionMessageLifetimeUsingBlockhash({ blockhash: BLOCKHASH, lastValidBlockHeight: 1n }, msg),
+        msg => appendTransactionMessageInstructions(instructions, msg),
+    );
+
+    return getBase64EncodedWireTransaction(await partiallySignTransactionMessageWithSigners(txMessage));
+}
+
+async function createAssociatedTokenAccountIdempotent(
+    payer: Address,
+    owner: Address,
+    mint: Address,
+    tokenProgram: Address,
+): Promise<Instruction> {
+    const [ata] = await findAssociatedTokenPda({
+        owner,
+        mint,
+        tokenProgram,
+    });
+
+    return {
+        accounts: [
+            { address: payer, role: AccountRole.WRITABLE_SIGNER },
+            { address: ata, role: AccountRole.WRITABLE },
+            { address: owner, role: AccountRole.READONLY },
+            { address: mint, role: AccountRole.READONLY },
+            { address: address(SYSTEM_PROGRAM), role: AccountRole.READONLY },
+            { address: tokenProgram, role: AccountRole.READONLY },
+        ],
+        data: new Uint8Array([1]),
+        programAddress: address(ASSOCIATED_TOKEN_PROGRAM),
+    };
 }
 
 // ── RPC response builders ──
@@ -104,42 +279,71 @@ function rpcError(message: string) {
 }
 
 function solTransferTx(destination: string, lamports: number | string) {
+    return txWithInstructions([
+        {
+            program: 'system',
+            parsed: {
+                type: 'transfer',
+                info: { destination, lamports: Number(lamports) },
+            },
+        },
+    ]);
+}
+
+function txWithInstructions(instructions: unknown[]) {
     return {
         meta: { err: null },
         transaction: {
             message: {
-                instructions: [
-                    {
-                        program: 'system',
-                        parsed: {
-                            type: 'transfer',
-                            info: { destination, lamports: Number(lamports) },
-                        },
-                    },
-                ],
+                instructions,
+            },
+        },
+    };
+}
+
+function splTransferIx(destination: string, mint: string, amount: string, programId: string = TOKEN_PROGRAM) {
+    return {
+        programId,
+        parsed: {
+            type: 'transferChecked',
+            info: {
+                destination,
+                mint,
+                tokenAmount: { amount },
             },
         },
     };
 }
 
 function splTransferTx(destination: string, mint: string, amount: string, programId: string = TOKEN_PROGRAM) {
+    return txWithInstructions([splTransferIx(destination, mint, amount, programId)]);
+}
+
+function ataCreateIx({
+    account,
+    mint,
+    owner,
+    payer,
+    tokenProgram = TOKEN_PROGRAM,
+}: {
+    account: string;
+    mint: string;
+    owner: string;
+    payer: string;
+    tokenProgram?: string;
+}) {
     return {
-        meta: { err: null },
-        transaction: {
-            message: {
-                instructions: [
-                    {
-                        programId,
-                        parsed: {
-                            type: 'transferChecked',
-                            info: {
-                                destination,
-                                mint,
-                                tokenAmount: { amount },
-                            },
-                        },
-                    },
-                ],
+        program: 'spl-associated-token-account',
+        programId: ASSOCIATED_TOKEN_PROGRAM,
+        parsed: {
+            type: 'createIdempotent',
+            info: {
+                account,
+                mint,
+                source: payer,
+                systemProgram: SYSTEM_PROGRAM,
+                tokenProgram,
+                wallet: owner,
             },
         },
     };
@@ -181,6 +385,30 @@ test('charge() does not throw for native SOL', () => {
             store,
         }),
     ).not.toThrow();
+});
+
+test('charge() rejects split ATA creation when currency is native SOL', () => {
+    expect(() =>
+        charge({
+            recipient: RECIPIENT,
+            network: 'devnet',
+            splits: [{ recipient: PLATFORM, amount: '50000', ataCreationRequired: true }],
+            store,
+        }),
+    ).toThrow(/SPL token currency/);
+});
+
+test('charge() rejects split ATA creation when currency is a stablecoin symbol', () => {
+    expect(() =>
+        charge({
+            recipient: RECIPIENT,
+            currency: 'USDC',
+            decimals: 6,
+            network: 'devnet',
+            splits: [{ recipient: PLATFORM, amount: '50000', ataCreationRequired: true }],
+            store,
+        }),
+    ).toThrow(/mint address/);
 });
 
 // ── Request generation ──
@@ -416,6 +644,138 @@ test('signature: rejects SPL transfer with wrong destination ATA', async () => {
     ).rejects.toThrow(/No TransferChecked instruction found|Destination token account does not belong/);
 });
 
+test('signature: rejects extra SPL payment legs after required transfer is matched', async () => {
+    const method = charge({
+        recipient: RECIPIENT,
+        currency: USDC_MINT,
+        decimals: 6,
+        network: 'devnet',
+        rpcUrl: 'https://mock-rpc',
+        store,
+    });
+
+    const [expectedAta] = await findAssociatedTokenPda({
+        owner: address(RECIPIENT),
+        mint: address(USDC_MINT),
+        tokenProgram: address(TOKEN_PROGRAM),
+    });
+    const attacker = await generateKeyPairSigner();
+    const [attackerAta] = await findAssociatedTokenPda({
+        owner: attacker.address,
+        mint: address(USDC_MINT),
+        tokenProgram: address(TOKEN_PROGRAM),
+    });
+
+    globalThis.fetch = async () =>
+        rpcSuccess(
+            txWithInstructions([
+                splTransferIx(expectedAta, USDC_MINT, '1000000'),
+                splTransferIx(attackerAta, USDC_MINT, '1'),
+            ]),
+        );
+
+    await expect(
+        method.verify({
+            credential: signatureCredential(SIGNATURE, {
+                amount: '1000000',
+                currency: USDC_MINT,
+                decimals: 6,
+            }),
+            request: {} as any,
+        }),
+    ).rejects.toThrow(/Unexpected Token Program instruction/);
+});
+
+test('signature: rejects ATA creation for owner not authorized by the challenge', async () => {
+    const method = charge({
+        recipient: RECIPIENT,
+        currency: USDC_MINT,
+        decimals: 6,
+        network: 'devnet',
+        rpcUrl: 'https://mock-rpc',
+        store,
+    });
+
+    const payer = await generateKeyPairSigner();
+    const extraOwner = await generateKeyPairSigner();
+    const [recipientAta] = await findAssociatedTokenPda({
+        owner: address(RECIPIENT),
+        mint: address(USDC_MINT),
+        tokenProgram: address(TOKEN_PROGRAM),
+    });
+    const [extraAta] = await findAssociatedTokenPda({
+        owner: extraOwner.address,
+        mint: address(USDC_MINT),
+        tokenProgram: address(TOKEN_PROGRAM),
+    });
+
+    globalThis.fetch = async () =>
+        rpcSuccess(
+            txWithInstructions([
+                ataCreateIx({
+                    account: extraAta,
+                    mint: USDC_MINT,
+                    owner: extraOwner.address,
+                    payer: payer.address,
+                }),
+                splTransferIx(recipientAta, USDC_MINT, '1000000'),
+            ]),
+        );
+
+    await expect(
+        method.verify({
+            credential: signatureCredential(SIGNATURE, {
+                amount: '1000000',
+                currency: USDC_MINT,
+                decimals: 6,
+            }),
+            request: {} as any,
+        }),
+    ).rejects.toThrow(/ATA creation owner is not authorized/);
+});
+
+test('signature: rejects ATA creation for top-level recipient', async () => {
+    const method = charge({
+        recipient: RECIPIENT,
+        currency: USDC_MINT,
+        decimals: 6,
+        network: 'devnet',
+        rpcUrl: 'https://mock-rpc',
+        store,
+    });
+
+    const payer = await generateKeyPairSigner();
+    const [recipientAta] = await findAssociatedTokenPda({
+        owner: address(RECIPIENT),
+        mint: address(USDC_MINT),
+        tokenProgram: address(TOKEN_PROGRAM),
+    });
+
+    globalThis.fetch = async () =>
+        rpcSuccess(
+            txWithInstructions([
+                ataCreateIx({
+                    account: recipientAta,
+                    mint: USDC_MINT,
+                    owner: RECIPIENT,
+                    payer: payer.address,
+                }),
+                splTransferIx(recipientAta, USDC_MINT, '1000000'),
+            ]),
+        );
+
+    await expect(
+        method.verify({
+            credential: signatureCredential(SIGNATURE, {
+                amount: '1000000',
+                currency: USDC_MINT,
+                decimals: 6,
+            }),
+            request: {} as any,
+        }),
+    ).rejects.toThrow(/ATA creation owner is not authorized/);
+});
+
 // ── Replay prevention (type="signature") ──
 
 test('signature: rejects already-consumed transaction signature', async () => {
@@ -602,7 +962,7 @@ test('pull: accepts valid native SOL transfer', async () => {
     mockServerBroadcastFetch(solTransferTx(RECIPIENT, 1000000));
 
     const receipt = await method.verify({
-        credential: transactionCredential(FAKE_TX_BASE64, { amount: '1000000' }),
+        credential: transactionCredential(await buildSolPaymentTxBase64(RECIPIENT, 1000000), { amount: '1000000' }),
         request: {} as any,
     });
 
@@ -629,7 +989,7 @@ test('pull: accepts valid SPL token transfer', async () => {
     mockServerBroadcastFetch(splTransferTx(expectedAta, USDC_MINT, '1000000'));
 
     const receipt = await method.verify({
-        credential: transactionCredential(FAKE_TX_BASE64, {
+        credential: transactionCredential(await buildSplPaymentTxBase64(RECIPIENT, USDC_MINT, '1000000'), {
             amount: '1000000',
             currency: USDC_MINT,
             decimals: 6,
@@ -639,6 +999,302 @@ test('pull: accepts valid SPL token transfer', async () => {
 
     expect(receipt.status).toBe('success');
     expect(receipt.reference).toBe(SIGNATURE);
+});
+
+test('client buildChargeTransaction creates verifier-compatible SPL transaction', async () => {
+    const signer = await generateKeyPairSigner();
+    const method = charge({
+        recipient: RECIPIENT,
+        currency: USDC_MINT,
+        decimals: 6,
+        network: 'devnet',
+        rpcUrl: 'https://mock-rpc',
+        store,
+    });
+
+    const [expectedAta] = await findAssociatedTokenPda({
+        owner: address(RECIPIENT),
+        mint: address(USDC_MINT),
+        tokenProgram: address(TOKEN_PROGRAM),
+    });
+    mockServerBroadcastFetch(splTransferTx(expectedAta, USDC_MINT, '1000000'));
+
+    const tx = await buildChargeTransaction({
+        request: {
+            amount: '1000000',
+            currency: USDC_MINT,
+            recipient: RECIPIENT,
+            methodDetails: {
+                decimals: 6,
+                network: 'devnet',
+                recentBlockhash: BLOCKHASH,
+                tokenProgram: TOKEN_PROGRAM,
+            },
+        },
+        rpcUrl: 'https://mock-rpc',
+        signer,
+    });
+
+    const receipt = await method.verify({
+        credential: transactionCredential(tx, {
+            amount: '1000000',
+            currency: USDC_MINT,
+            decimals: 6,
+            tokenProgram: TOKEN_PROGRAM,
+        }),
+        request: {} as any,
+    });
+
+    expect(receipt.status).toBe('success');
+    expect(receipt.reference).toBe(SIGNATURE);
+});
+
+test('pull: accepts fee payer split recipient ATA creation', async () => {
+    const signer = await generateKeyPairSigner();
+    const splits = [{ recipient: PLATFORM, amount: '50000', ataCreationRequired: true }];
+    const method = charge({
+        recipient: RECIPIENT,
+        currency: USDC_MINT,
+        decimals: 6,
+        network: 'devnet',
+        rpcUrl: 'https://mock-rpc',
+        signer,
+        splits,
+        store,
+    });
+
+    const [recipientAta] = await findAssociatedTokenPda({
+        owner: address(RECIPIENT),
+        mint: address(USDC_MINT),
+        tokenProgram: address(TOKEN_PROGRAM),
+    });
+    const [platformAta] = await findAssociatedTokenPda({
+        owner: address(PLATFORM),
+        mint: address(USDC_MINT),
+        tokenProgram: address(TOKEN_PROGRAM),
+    });
+    mockServerBroadcastFetch(
+        txWithInstructions([
+            splTransferIx(recipientAta, USDC_MINT, '950000'),
+            ataCreateIx({ account: platformAta, mint: USDC_MINT, owner: PLATFORM, payer: signer.address }),
+            splTransferIx(platformAta, USDC_MINT, '50000'),
+        ]),
+    );
+
+    const receipt = await method.verify({
+        credential: transactionCredential(
+            await buildSplPaymentTxBase64(RECIPIENT, USDC_MINT, '950000', 6, TOKEN_PROGRAM, {
+                feePayerKey: signer.address,
+                splits,
+            }),
+            {
+                amount: '1000000',
+                currency: USDC_MINT,
+                decimals: 6,
+                feePayer: true,
+                feePayerKey: signer.address,
+                splits,
+            },
+        ),
+        request: {} as any,
+    });
+
+    expect(receipt.status).toBe('success');
+});
+
+test('pull: rejects fee payer split ATA creation for top-level recipient', async () => {
+    const signer = await generateKeyPairSigner();
+    const splits = [{ recipient: PLATFORM, amount: '50000', ataCreationRequired: true }];
+    const method = charge({
+        recipient: RECIPIENT,
+        currency: USDC_MINT,
+        decimals: 6,
+        network: 'devnet',
+        rpcUrl: 'https://mock-rpc',
+        signer,
+        splits,
+        store,
+    });
+
+    mockServerBroadcastFetch(txWithInstructions([]));
+
+    await expect(
+        method.verify({
+            credential: transactionCredential(
+                await buildSplPaymentTxBase64(RECIPIENT, USDC_MINT, '950000', 6, TOKEN_PROGRAM, {
+                    extraAtaOwners: [RECIPIENT],
+                    feePayerKey: signer.address,
+                    splits,
+                }),
+                {
+                    amount: '1000000',
+                    currency: USDC_MINT,
+                    decimals: 6,
+                    feePayer: true,
+                    feePayerKey: signer.address,
+                    splits,
+                },
+            ),
+            request: {} as any,
+        }),
+    ).rejects.toThrow(/not authorized/);
+});
+
+test('pull: rejects client-paid ATA creation for top-level recipient', async () => {
+    const method = charge({
+        recipient: RECIPIENT,
+        currency: USDC_MINT,
+        decimals: 6,
+        network: 'devnet',
+        rpcUrl: 'https://mock-rpc',
+        store,
+    });
+
+    mockServerBroadcastFetch(txWithInstructions([]));
+
+    await expect(
+        method.verify({
+            credential: transactionCredential(
+                await buildSplPaymentTxBase64(RECIPIENT, USDC_MINT, '1000000', 6, TOKEN_PROGRAM, {
+                    extraAtaOwners: [RECIPIENT],
+                }),
+                {
+                    amount: '1000000',
+                    currency: USDC_MINT,
+                    decimals: 6,
+                },
+            ),
+            request: {} as any,
+        }),
+    ).rejects.toThrow(/not authorized/);
+});
+
+test('pull: rejects fee payer split challenge when pre-broadcast tx omits required split ATA', async () => {
+    const signer = await generateKeyPairSigner();
+    const splits = [{ recipient: PLATFORM, amount: '50000', ataCreationRequired: true }];
+    const method = charge({
+        recipient: RECIPIENT,
+        currency: USDC_MINT,
+        decimals: 6,
+        network: 'devnet',
+        rpcUrl: 'https://mock-rpc',
+        signer,
+        splits,
+        store,
+    });
+
+    mockServerBroadcastFetch(txWithInstructions([]));
+
+    await expect(
+        method.verify({
+            credential: transactionCredential(
+                await buildSplPaymentTxBase64(RECIPIENT, USDC_MINT, '950000', 6, TOKEN_PROGRAM, {
+                    feePayerKey: signer.address,
+                    skipAtaCreationFor: [PLATFORM],
+                    splits,
+                }),
+                {
+                    amount: '1000000',
+                    currency: USDC_MINT,
+                    decimals: 6,
+                    feePayer: true,
+                    feePayerKey: signer.address,
+                    splits,
+                },
+            ),
+            request: {} as any,
+        }),
+    ).rejects.toThrow(/Missing required ATA creation/);
+});
+
+test('pull: rejects split ATA creation when challenge currency is a stablecoin symbol', async () => {
+    const signer = await generateKeyPairSigner();
+    const splits = [{ recipient: PLATFORM, amount: '50000', ataCreationRequired: true }];
+    const method = charge({
+        recipient: RECIPIENT,
+        currency: USDC_MINT,
+        decimals: 6,
+        network: 'devnet',
+        rpcUrl: 'https://mock-rpc',
+        signer,
+        splits,
+        store,
+    });
+
+    mockServerBroadcastFetch(txWithInstructions([]));
+
+    await expect(
+        method.verify({
+            credential: transactionCredential(
+                await buildSplPaymentTxBase64(RECIPIENT, USDC_MINT, '950000', 6, TOKEN_PROGRAM, {
+                    feePayerKey: signer.address,
+                    splits,
+                }),
+                {
+                    amount: '1000000',
+                    currency: 'USDC',
+                    decimals: 6,
+                    feePayer: true,
+                    feePayerKey: signer.address,
+                    splits,
+                },
+            ),
+            request: {} as any,
+        }),
+    ).rejects.toThrow(/mint address/);
+});
+
+test('pull: rejects fee payer split challenge when post-broadcast tx omits required split ATA', async () => {
+    const signer = await generateKeyPairSigner();
+    const splits = [{ recipient: PLATFORM, amount: '50000', ataCreationRequired: true }];
+    const method = charge({
+        recipient: RECIPIENT,
+        currency: USDC_MINT,
+        decimals: 6,
+        network: 'devnet',
+        rpcUrl: 'https://mock-rpc',
+        signer,
+        splits,
+        store,
+    });
+
+    const [recipientAta] = await findAssociatedTokenPda({
+        owner: address(RECIPIENT),
+        mint: address(USDC_MINT),
+        tokenProgram: address(TOKEN_PROGRAM),
+    });
+    const [platformAta] = await findAssociatedTokenPda({
+        owner: address(PLATFORM),
+        mint: address(USDC_MINT),
+        tokenProgram: address(TOKEN_PROGRAM),
+    });
+
+    mockServerBroadcastFetch(
+        txWithInstructions([
+            splTransferIx(recipientAta, USDC_MINT, '950000'),
+            splTransferIx(platformAta, USDC_MINT, '50000'),
+        ]),
+    );
+
+    await expect(
+        method.verify({
+            credential: transactionCredential(
+                await buildSplPaymentTxBase64(RECIPIENT, USDC_MINT, '950000', 6, TOKEN_PROGRAM, {
+                    feePayerKey: signer.address,
+                    splits,
+                }),
+                {
+                    amount: '1000000',
+                    currency: USDC_MINT,
+                    decimals: 6,
+                    feePayer: true,
+                    feePayerKey: signer.address,
+                    splits,
+                },
+            ),
+            request: {} as any,
+        }),
+    ).rejects.toThrow(/Missing required ATA creation/);
 });
 
 test('transaction: rejects when sendTransaction fails', async () => {
@@ -653,7 +1309,7 @@ test('transaction: rejects when sendTransaction fails', async () => {
 
     await expect(
         method.verify({
-            credential: transactionCredential(FAKE_TX_BASE64, { amount: '1000000' }),
+            credential: transactionCredential(await buildSolPaymentTxBase64(RECIPIENT, 1000000), { amount: '1000000' }),
             request: {} as any,
         }),
     ).rejects.toThrow(/RPC error/);
@@ -671,7 +1327,7 @@ test('transaction: rejects when on-chain verification fails (wrong recipient)', 
 
     await expect(
         method.verify({
-            credential: transactionCredential(FAKE_TX_BASE64, { amount: '1000000' }),
+            credential: transactionCredential(await buildSolPaymentTxBase64(RECIPIENT, 1000000), { amount: '1000000' }),
             request: {} as any,
         }),
     ).rejects.toThrow(/No.*transfer.*instruction.*found|Recipient mismatch/);
@@ -738,6 +1394,90 @@ test('splits: request() includes splits in challenge', async () => {
     expect(request.methodDetails.splits![0].recipient).toBe(PLATFORM);
     expect(request.methodDetails.splits![0].amount).toBe('50000');
     expect(request.methodDetails.splits![0].memo).toBe('platform fee');
+});
+
+test('request() includes split ATA creation requirements', async () => {
+    globalThis.fetch = async () =>
+        rpcSuccess({
+            value: { blockhash: 'MockBlockhash1111111111111111111111111111111', lastValidBlockHeight: 100 },
+        });
+
+    const signer = await generateKeyPairSigner();
+    const splits = [{ recipient: PLATFORM, amount: '50000', ataCreationRequired: true }];
+    const method = charge({
+        recipient: RECIPIENT,
+        currency: USDC_MINT,
+        decimals: 6,
+        network: 'devnet',
+        signer,
+        store,
+        splits,
+    });
+
+    const request = await method.request!({
+        credential: null,
+        request: { amount: '1000000', currency: USDC_MINT, recipient: '', methodDetails: {} },
+    });
+
+    expect(request.methodDetails.feePayer).toBe(true);
+    expect(request.methodDetails.feePayerKey).toBe(signer.address);
+    expect(request.methodDetails.splits).toEqual(splits);
+});
+
+test('request() preserves unmarked splits in fee payer mode', async () => {
+    globalThis.fetch = async () =>
+        rpcSuccess({
+            value: { blockhash: 'MockBlockhash1111111111111111111111111111111', lastValidBlockHeight: 100 },
+        });
+
+    const signer = await generateKeyPairSigner();
+    const splits = [{ recipient: PLATFORM, amount: '50000' }];
+    const method = charge({
+        recipient: RECIPIENT,
+        currency: USDC_MINT,
+        decimals: 6,
+        network: 'devnet',
+        signer,
+        store,
+        splits,
+    });
+
+    const request = await method.request!({
+        credential: null,
+        request: {
+            amount: '1000000',
+            currency: USDC_MINT,
+            recipient: '',
+            methodDetails: {},
+        },
+    });
+
+    expect(request.methodDetails.feePayer).toBe(true);
+    expect(request.methodDetails.splits).toEqual(splits);
+});
+
+test('request() defaults Phantom CASH to Token-2022', async () => {
+    globalThis.fetch = async () =>
+        rpcSuccess({
+            value: { blockhash: 'MockBlockhash1111111111111111111111111111111', lastValidBlockHeight: 100 },
+        });
+
+    const method = charge({
+        recipient: RECIPIENT,
+        currency: 'CASH',
+        decimals: 6,
+        network: 'mainnet-beta',
+        store,
+    });
+
+    const request = await method.request!({
+        credential: null,
+        request: { amount: '1000000', currency: 'CASH', recipient: '', methodDetails: {} },
+    });
+
+    expect(request.currency).toBe('CASH');
+    expect(request.methodDetails.tokenProgram).toBe(TOKEN_2022_PROGRAM);
+    expect(CASH['mainnet-beta']).toBe('CASHx9KJUStyftLFWGvEVf59SGeG9sh5FfcnZMVPCASH');
 });
 
 test('splits: SOL verification passes with valid primary + split transfers', async () => {

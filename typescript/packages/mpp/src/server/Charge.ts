@@ -9,7 +9,17 @@ import {
 import { findAssociatedTokenPda } from '@solana-program/token';
 import { Method, Receipt, Store } from 'mppx';
 
-import { DEFAULT_RPC_URLS, TOKEN_2022_PROGRAM, TOKEN_PROGRAM } from '../constants.js';
+import {
+    ASSOCIATED_TOKEN_PROGRAM,
+    COMPUTE_BUDGET_PROGRAM,
+    DEFAULT_RPC_URLS,
+    defaultTokenProgramForCurrency,
+    resolveStablecoinMint,
+    stablecoinSymbolForCurrency,
+    SYSTEM_PROGRAM,
+    TOKEN_2022_PROGRAM,
+    TOKEN_PROGRAM,
+} from '../constants.js';
 import * as Methods from '../Methods.js';
 import { coSignBase64Transaction } from '../utils/transactions.js';
 import { PAYMENT_UI_JS } from './html-assets.gen.js';
@@ -55,7 +65,7 @@ export function charge(parameters: charge.Parameters) {
         currency,
         decimals,
         html: htmlEnabled = false,
-        tokenProgram = TOKEN_PROGRAM,
+        tokenProgram: configuredTokenProgram,
         network = 'mainnet-beta',
         store = Store.memory(),
         splits,
@@ -63,6 +73,7 @@ export function charge(parameters: charge.Parameters) {
     } = parameters;
 
     const isSplToken = currency !== undefined && currency !== 'sol';
+    const tokenProgram = configuredTokenProgram ?? defaultTokenProgramForCurrency(currency, network);
 
     const rpcUrl = parameters.rpcUrl ?? DEFAULT_RPC_URLS[network] ?? DEFAULT_RPC_URLS['mainnet-beta'];
 
@@ -80,13 +91,13 @@ export function charge(parameters: charge.Parameters) {
         );
     }
 
-    // Known currency display names for the payment page amount formatting.
-    const KNOWN_SYMBOLS: Record<string, string> = {
-        '2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo': 'PYUSD',
-        '4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU': 'USDC',
-        EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v: 'USDC',
-        Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB: 'USDT',
-    };
+    const hasAtaCreationSplits = splits?.some(split => split.ataCreationRequired === true) === true;
+    if (!isSplToken && hasAtaCreationSplits) {
+        throw new Error('ataCreationRequired requires an SPL token currency');
+    }
+    if (hasAtaCreationSplits && (currency === undefined || resolveStablecoinMint(currency, network) !== currency)) {
+        throw new Error('ataCreationRequired requires currency to be an SPL token mint address');
+    }
 
     const method = Method.toServer(Methods.charge, {
         defaults: {
@@ -104,7 +115,7 @@ export function charge(parameters: charge.Parameters) {
                       const raw = Number(request.amount) / 10 ** dec;
                       const display = raw % 1 === 0 ? raw.toString() : raw.toFixed(Math.min(dec, 2));
                       if (request.currency.toLowerCase() === 'sol') return `${display} SOL`;
-                      const sym = KNOWN_SYMBOLS[request.currency];
+                      const sym = stablecoinSymbolForCurrency(request.currency);
                       if (sym) return `$${display}`;
                       return `${display} ${request.currency.slice(0, 6)}`;
                   },
@@ -210,6 +221,403 @@ function extractRecentBlockhash(clientTxBase64: string): string | null {
     }
 }
 
+const MAX_COMPUTE_UNIT_LIMIT = 200_000;
+const MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS = 5_000_000n;
+
+type CompiledMessage = {
+    addressTableLookups?: readonly unknown[];
+    instructions: readonly CompiledInstruction[];
+    staticAccounts: readonly string[];
+};
+
+type CompiledInstruction = {
+    accountIndices: readonly number[];
+    data: Uint8Array;
+    programAddressIndex: number;
+};
+
+async function verifyBase64TransactionPreBroadcast(clientTxBase64: string, challenge: ChallengeRequest) {
+    let message: CompiledMessage;
+    try {
+        const txBytes = getBase64Codec().encode(clientTxBase64);
+        const decoded = getTransactionDecoder().decode(txBytes);
+        message = getCompiledTransactionMessageDecoder().decode(decoded.messageBytes) as unknown as CompiledMessage;
+    } catch (e) {
+        throw new Error(`Invalid transaction: ${e instanceof Error ? e.message : String(e)}`);
+    }
+
+    if (message.addressTableLookups?.length) {
+        throw new Error('v0 transactions with address lookup tables are not supported');
+    }
+
+    const splits = challenge.methodDetails.splits ?? [];
+    if (splits.length > 8) {
+        throw new Error(`Too many splits: ${splits.length} (maximum 8)`);
+    }
+
+    const totalAmount = BigInt(challenge.amount);
+    const splitsTotal = splits.reduce((sum, split) => sum + BigInt(split.amount), 0n);
+    const primaryAmount = totalAmount - splitsTotal;
+    if (primaryAmount <= 0n) {
+        throw new Error('Splits consume the entire amount — primary recipient must receive a positive amount');
+    }
+
+    const feePayer = expectedFeePayer(message, challenge.methodDetails);
+    const isNativeSol = challenge.currency.toLowerCase() === 'sol';
+    if (isNativeSol && splits.some(split => split.ataCreationRequired === true)) {
+        throw new Error('ataCreationRequired requires an SPL token charge');
+    }
+
+    const matchedInstructionIndexes = new Set<number>();
+    const ataPolicy = expectedAtaCreationPolicy(challenge, feePayer);
+
+    if (isNativeSol) {
+        verifySolTransferPreBroadcast(message, challenge.recipient, primaryAmount, feePayer, matchedInstructionIndexes);
+        for (const split of splits) {
+            verifySolTransferPreBroadcast(
+                message,
+                split.recipient,
+                BigInt(split.amount),
+                feePayer,
+                matchedInstructionIndexes,
+            );
+        }
+        await validateInstructionAllowlist(message, matchedInstructionIndexes, {
+            allowedAtaOwners: ataPolicy.allowedAtaOwners,
+            expectedMint: undefined,
+            expectedTokenProgram: undefined,
+            feePayer,
+            requiredAtaOwners: ataPolicy.requiredAtaOwners,
+        });
+        return;
+    }
+
+    const expectedMint = resolveStablecoinMint(challenge.currency, challenge.methodDetails.network);
+    if (!expectedMint) {
+        throw new Error('SPL charge is missing a mint address');
+    }
+    if (ataPolicy.requiredAtaOwners.size > 0 && challenge.currency !== expectedMint) {
+        throw new Error('ataCreationRequired requires currency to be an SPL token mint address');
+    }
+    const expectedTokenProgram =
+        challenge.methodDetails.tokenProgram ??
+        defaultTokenProgramForCurrency(challenge.currency, challenge.methodDetails.network);
+
+    await verifySplTransferPreBroadcast(
+        message,
+        challenge.recipient,
+        expectedMint,
+        primaryAmount,
+        expectedTokenProgram,
+        challenge.methodDetails.decimals,
+        feePayer,
+        matchedInstructionIndexes,
+    );
+    for (const split of splits) {
+        await verifySplTransferPreBroadcast(
+            message,
+            split.recipient,
+            expectedMint,
+            BigInt(split.amount),
+            expectedTokenProgram,
+            challenge.methodDetails.decimals,
+            feePayer,
+            matchedInstructionIndexes,
+        );
+    }
+    await validateInstructionAllowlist(message, matchedInstructionIndexes, {
+        allowedAtaOwners: ataPolicy.allowedAtaOwners,
+        expectedMint,
+        expectedTokenProgram,
+        feePayer,
+        requiredAtaOwners: ataPolicy.requiredAtaOwners,
+    });
+}
+
+function expectedFeePayer(
+    message: CompiledMessage,
+    methodDetails: ChallengeRequest['methodDetails'],
+): string | undefined {
+    if (!methodDetails.feePayer) {
+        return undefined;
+    }
+
+    const feePayerKey = methodDetails.feePayerKey;
+    if (!feePayerKey) {
+        throw new Error('feePayer=true requires feePayerKey in methodDetails');
+    }
+
+    const txFeePayer = message.staticAccounts[0];
+    if (txFeePayer !== feePayerKey) {
+        throw new Error(`Transaction fee payer must be ${feePayerKey}`);
+    }
+
+    return feePayerKey;
+}
+
+function expectedAtaCreationPolicy(
+    challenge: ChallengeRequest,
+    feePayer: string | undefined,
+): { allowedAtaOwners: Set<string>; requiredAtaOwners: Set<string> } {
+    const splits = challenge.methodDetails.splits ?? [];
+    const requiredAtaOwners = new Set(
+        splits.filter(split => split.ataCreationRequired === true).map(split => split.recipient),
+    );
+    if (feePayer) {
+        return { allowedAtaOwners: new Set(requiredAtaOwners), requiredAtaOwners };
+    }
+    return {
+        allowedAtaOwners: new Set(splits.map(split => split.recipient)),
+        requiredAtaOwners,
+    };
+}
+
+function verifySolTransferPreBroadcast(
+    message: CompiledMessage,
+    recipient: string,
+    amount: bigint,
+    feePayer: string | undefined,
+    matchedInstructionIndexes: Set<number>,
+) {
+    for (const [index, ix] of message.instructions.entries()) {
+        if (matchedInstructionIndexes.has(index)) continue;
+        if (programAddress(message, ix) !== SYSTEM_PROGRAM) continue;
+        if (ix.data.length < 12 || readU32Le(ix.data, 0) !== 2) continue;
+        if (readU64Le(ix.data, 4) !== amount) continue;
+        if (ix.accountIndices.length < 2) continue;
+
+        const source = accountAddress(message, ix.accountIndices[0], 'source');
+        const destination = accountAddress(message, ix.accountIndices[1], 'destination');
+        if (destination !== recipient) continue;
+        if (feePayer && source === feePayer) {
+            throw new Error('Fee payer cannot fund the SOL payment transfer');
+        }
+
+        matchedInstructionIndexes.add(index);
+        return;
+    }
+
+    throw new Error(`No matching SOL transfer of ${amount} lamports to ${recipient}`);
+}
+
+async function verifySplTransferPreBroadcast(
+    message: CompiledMessage,
+    recipient: string,
+    expectedMint: string,
+    amount: bigint,
+    expectedTokenProgram: string,
+    expectedDecimals: number | undefined,
+    feePayer: string | undefined,
+    matchedInstructionIndexes: Set<number>,
+) {
+    for (const [index, ix] of message.instructions.entries()) {
+        if (matchedInstructionIndexes.has(index)) continue;
+        const program = programAddress(message, ix);
+        if (program !== TOKEN_PROGRAM && program !== TOKEN_2022_PROGRAM) continue;
+        if (program !== expectedTokenProgram) continue;
+        if (ix.data.length < 10 || ix.data[0] !== 12) continue;
+        if (readU64Le(ix.data, 1) !== amount) continue;
+        if (expectedDecimals !== undefined && ix.data[9] !== expectedDecimals) continue;
+        if (ix.accountIndices.length < 4) continue;
+
+        const sourceAta = accountAddress(message, ix.accountIndices[0], 'source ATA');
+        const mint = accountAddress(message, ix.accountIndices[1], 'mint');
+        const destinationAta = accountAddress(message, ix.accountIndices[2], 'destination ATA');
+        const authority = accountAddress(message, ix.accountIndices[3], 'authority');
+        if (mint !== expectedMint) continue;
+
+        if (feePayer) {
+            if (authority === feePayer) {
+                throw new Error('Fee payer cannot authorize the SPL payment transfer');
+            }
+            const [feePayerAta] = await findAssociatedTokenPda({
+                mint: address(expectedMint),
+                owner: address(feePayer),
+                tokenProgram: address(program),
+            });
+            if (sourceAta === feePayerAta) {
+                throw new Error('Fee payer token account cannot fund the SPL payment transfer');
+            }
+        }
+
+        const [expectedAta] = await findAssociatedTokenPda({
+            mint: address(expectedMint),
+            owner: address(recipient),
+            tokenProgram: address(program),
+        });
+        if (destinationAta !== expectedAta) continue;
+
+        matchedInstructionIndexes.add(index);
+        return;
+    }
+
+    throw new Error(`No matching SPL transferChecked of ${amount} to ${recipient}`);
+}
+
+async function validateInstructionAllowlist(
+    message: CompiledMessage,
+    matchedPaymentInstructionIndexes: Set<number>,
+    options: {
+        allowedAtaOwners: Set<string>;
+        expectedMint: string | undefined;
+        expectedTokenProgram: string | undefined;
+        feePayer: string | undefined;
+        requiredAtaOwners: Set<string>;
+    },
+) {
+    const txFeePayer = message.staticAccounts[0];
+    if (!txFeePayer) {
+        throw new Error('Transaction has no fee payer');
+    }
+    const expectedAtaPayer = options.feePayer ?? txFeePayer;
+    const createdAtaOwners = new Set<string>();
+
+    for (const [index, ix] of message.instructions.entries()) {
+        const program = programAddress(message, ix);
+
+        if (program === COMPUTE_BUDGET_PROGRAM) {
+            validateComputeBudgetInstruction(ix);
+            continue;
+        }
+
+        if (program === SYSTEM_PROGRAM) {
+            if (matchedPaymentInstructionIndexes.has(index)) continue;
+            throw new Error('Unexpected System Program instruction in payment transaction');
+        }
+
+        if (program === TOKEN_PROGRAM || program === TOKEN_2022_PROGRAM) {
+            if (matchedPaymentInstructionIndexes.has(index)) continue;
+            throw new Error('Unexpected Token Program instruction in payment transaction');
+        }
+
+        if (program === ASSOCIATED_TOKEN_PROGRAM) {
+            const owner = await validateCreateAtaIdempotentInstruction(
+                message,
+                ix,
+                options.expectedMint,
+                options.allowedAtaOwners,
+                options.expectedTokenProgram,
+                expectedAtaPayer,
+            );
+            createdAtaOwners.add(owner);
+            continue;
+        }
+
+        throw new Error(`Unexpected program instruction in payment transaction: ${program}`);
+    }
+
+    for (const owner of options.requiredAtaOwners) {
+        if (!createdAtaOwners.has(owner)) {
+            throw new Error(`Missing required ATA creation instruction for split recipient ${owner}`);
+        }
+    }
+}
+
+function validateComputeBudgetInstruction(ix: CompiledInstruction) {
+    if ((ix.accountIndices ?? []).length !== 0) {
+        throw new Error('Compute budget instruction must not have accounts');
+    }
+
+    if (ix.data[0] === 2 && ix.data.length === 5) {
+        const units = readU32Le(ix.data, 1);
+        if (units > MAX_COMPUTE_UNIT_LIMIT) {
+            throw new Error(`Compute unit limit ${units} exceeds maximum ${MAX_COMPUTE_UNIT_LIMIT}`);
+        }
+        return;
+    }
+
+    if (ix.data[0] === 3 && ix.data.length === 9) {
+        const price = readU64Le(ix.data, 1);
+        if (price > MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS) {
+            throw new Error(`Compute unit price ${price} exceeds maximum ${MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS}`);
+        }
+        return;
+    }
+
+    throw new Error('Unsupported compute budget instruction');
+}
+
+async function validateCreateAtaIdempotentInstruction(
+    message: CompiledMessage,
+    ix: CompiledInstruction,
+    expectedMint: string | undefined,
+    allowedAtaOwners: Set<string>,
+    expectedTokenProgram: string | undefined,
+    expectedPayer: string,
+): Promise<string> {
+    if (!expectedMint) {
+        throw new Error('ATA creation is not allowed for native SOL payments');
+    }
+    if (ix.data.length !== 1 || ix.data[0] !== 1) {
+        throw new Error('Only idempotent ATA creation is allowed');
+    }
+    if (ix.accountIndices.length !== 6) {
+        throw new Error('Unexpected ATA creation account layout');
+    }
+
+    const payer = accountAddress(message, ix.accountIndices[0], 'ATA payer');
+    const ata = accountAddress(message, ix.accountIndices[1], 'ATA address');
+    const owner = accountAddress(message, ix.accountIndices[2], 'ATA owner');
+    const mint = accountAddress(message, ix.accountIndices[3], 'ATA mint');
+    const systemProgram = accountAddress(message, ix.accountIndices[4], 'ATA system program');
+    const tokenProgram = accountAddress(message, ix.accountIndices[5], 'ATA token program');
+
+    if (payer !== expectedPayer) {
+        throw new Error('ATA payer must match the transaction fee payer');
+    }
+    if (mint !== expectedMint) {
+        throw new Error('ATA creation mint does not match the charge currency');
+    }
+    if (systemProgram !== SYSTEM_PROGRAM) {
+        throw new Error('ATA creation must reference the System Program');
+    }
+    if (tokenProgram !== TOKEN_PROGRAM && tokenProgram !== TOKEN_2022_PROGRAM) {
+        throw new Error('ATA creation uses an unsupported token program');
+    }
+    if (expectedTokenProgram && tokenProgram !== expectedTokenProgram) {
+        throw new Error('ATA creation token program does not match methodDetails.tokenProgram');
+    }
+
+    const [expectedAta] = await findAssociatedTokenPda({
+        mint: address(mint),
+        owner: address(owner),
+        tokenProgram: address(tokenProgram),
+    });
+    if (ata !== expectedAta) {
+        throw new Error('ATA creation address does not match owner/mint/token program');
+    }
+
+    if (!allowedAtaOwners.has(owner)) {
+        throw new Error('ATA creation owner is not authorized by the challenge');
+    }
+
+    return owner;
+}
+
+function programAddress(message: CompiledMessage, ix: CompiledInstruction): string {
+    return accountAddress(message, ix.programAddressIndex, 'program address');
+}
+
+function accountAddress(message: CompiledMessage, index: number, label: string): string {
+    const value = message.staticAccounts[index];
+    if (!value) {
+        throw new Error(`Invalid ${label} index`);
+    }
+    return value;
+}
+
+function readU32Le(data: Uint8Array, offset: number): number {
+    return (data[offset] | (data[offset + 1] << 8) | (data[offset + 2] << 16) | (data[offset + 3] << 24)) >>> 0;
+}
+
+function readU64Le(data: Uint8Array, offset: number): bigint {
+    let value = 0n;
+    for (let i = 0; i < 8; i += 1) {
+        value |= BigInt(data[offset + i]) << BigInt(i * 8);
+    }
+    return value;
+}
+
 // ── Pull mode (type="transaction") ──
 
 async function verifyTransaction(
@@ -234,6 +642,8 @@ async function verifyTransaction(
     if (recentBlockhash !== null) {
         checkNetworkBlockhash(network, recentBlockhash);
     }
+
+    await verifyBase64TransactionPreBroadcast(clientTxBase64, challenge);
 
     let txToSend = clientTxBase64;
 
@@ -333,45 +743,84 @@ async function verifyInstructions(instructions: ParsedInstruction[], challenge: 
         throw new Error('Splits consume the entire amount — primary recipient must receive a positive amount');
     }
 
-    const mint = challenge.currency !== 'sol' ? challenge.currency : undefined;
+    const mint = resolveStablecoinMint(challenge.currency, challenge.methodDetails.network);
+    const matchedInstructionIndexes = new Set<number>();
+    const feePayer = challenge.methodDetails.feePayer === true ? challenge.methodDetails.feePayerKey : undefined;
+    if (challenge.methodDetails.feePayer === true && !feePayer) {
+        throw new Error('feePayer=true requires feePayerKey in methodDetails');
+    }
+    const ataPolicy = expectedAtaCreationPolicy(challenge, feePayer);
 
     if (mint) {
+        if (splits.some(split => split.ataCreationRequired === true) && challenge.currency !== mint) {
+            throw new Error('ataCreationRequired requires currency to be an SPL token mint address');
+        }
+
         // ── SPL token transfers verification ──
-        const transfers = instructions.filter(
-            ix =>
-                ix.parsed?.type === 'transferChecked' &&
-                (ix.programId === TOKEN_PROGRAM || ix.programId === TOKEN_2022_PROGRAM),
+        const expectedTokenProgram =
+            challenge.methodDetails.tokenProgram ??
+            defaultTokenProgramForCurrency(challenge.currency, challenge.methodDetails.network);
+
+        // Verify primary transfer to recipient.
+        await verifySplTransfer(
+            instructions,
+            recipient,
+            String(primaryAmount),
+            mint,
+            expectedTokenProgram,
+            matchedInstructionIndexes,
         );
 
-        const expectedTokenProgram = challenge.methodDetails.tokenProgram || TOKEN_PROGRAM;
-
-        // Verify primary transfer to recipient.
-        await verifySplTransfer(transfers, recipient, String(primaryAmount), mint, expectedTokenProgram);
-
         // Verify each split transfer.
         for (const split of splits) {
-            await verifySplTransfer(transfers, split.recipient, split.amount, mint, expectedTokenProgram);
+            await verifySplTransfer(
+                instructions,
+                split.recipient,
+                split.amount,
+                mint,
+                expectedTokenProgram,
+                matchedInstructionIndexes,
+            );
         }
+
+        await validateParsedInstructionAllowlist(instructions, matchedInstructionIndexes, {
+            allowedAtaOwners: ataPolicy.allowedAtaOwners,
+            expectedAtaPayer: feePayer,
+            expectedMint: mint,
+            expectedTokenProgram,
+            requiredAtaOwners: ataPolicy.requiredAtaOwners,
+        });
     } else {
-        // ── Native SOL transfers verification ──
-        const transfers = instructions.filter(ix => ix.parsed?.type === 'transfer' && ix.program === 'system');
+        if (splits.some(split => split.ataCreationRequired === true)) {
+            throw new Error('ataCreationRequired requires an SPL token charge');
+        }
 
+        // ── Native SOL transfers verification ──
         // Verify primary transfer to recipient.
-        verifySolTransfer(transfers, recipient, String(primaryAmount));
+        verifySolTransfer(instructions, recipient, String(primaryAmount), matchedInstructionIndexes);
 
         // Verify each split transfer.
         for (const split of splits) {
-            verifySolTransfer(transfers, split.recipient, split.amount);
+            verifySolTransfer(instructions, split.recipient, split.amount, matchedInstructionIndexes);
         }
+
+        await validateParsedInstructionAllowlist(instructions, matchedInstructionIndexes, {
+            allowedAtaOwners: ataPolicy.allowedAtaOwners,
+            expectedAtaPayer: undefined,
+            expectedMint: undefined,
+            expectedTokenProgram: undefined,
+            requiredAtaOwners: ataPolicy.requiredAtaOwners,
+        });
     }
 }
 
 async function verifySplTransfer(
-    transfers: ParsedInstruction[],
+    instructions: ParsedInstruction[],
     recipientAddress: string,
     expectedAmount: string,
     spl: string,
     tokenProgram: string,
+    matchedInstructionIndexes: Set<number>,
 ) {
     const [expectedAta] = await findAssociatedTokenPda({
         mint: address(spl),
@@ -379,43 +828,154 @@ async function verifySplTransfer(
         tokenProgram: address(tokenProgram),
     });
 
-    const index = transfers.findIndex(ix => {
-        const info = ix.parsed!.info as { destination: string; mint: string; tokenAmount: { amount: string } };
-        return info.destination === expectedAta && info.mint === spl && info.tokenAmount.amount === expectedAmount;
-    });
-
-    if (index === -1) {
-        throw new Error(`No TransferChecked instruction found for recipient ${recipientAddress}`);
+    for (const [index, ix] of instructions.entries()) {
+        if (matchedInstructionIndexes.has(index)) continue;
+        if (ix.parsed?.type !== 'transferChecked') continue;
+        if (ix.programId !== tokenProgram) continue;
+        const info = ix.parsed.info as { destination?: string; mint?: string; tokenAmount?: { amount?: string } };
+        if (info.destination === expectedAta && info.mint === spl && info.tokenAmount?.amount === expectedAmount) {
+            matchedInstructionIndexes.add(index);
+            return;
+        }
     }
 
-    const [transfer] = transfers.splice(index, 1);
+    throw new Error(`No TransferChecked instruction found for recipient ${recipientAddress}`);
+}
 
-    const info = transfer.parsed!.info as { destination: string; mint: string; tokenAmount: { amount: string } };
-    if (info.tokenAmount.amount !== expectedAmount) {
-        throw new Error(
-            `Amount mismatch for ${recipientAddress}: expected ${expectedAmount}, got ${info.tokenAmount.amount}`,
-        );
+function verifySolTransfer(
+    instructions: ParsedInstruction[],
+    recipientAddress: string,
+    expectedAmount: string,
+    matchedInstructionIndexes: Set<number>,
+) {
+    for (const [index, ix] of instructions.entries()) {
+        if (matchedInstructionIndexes.has(index)) continue;
+        if (ix.parsed?.type !== 'transfer' || ix.program !== 'system') continue;
+        const info = ix.parsed.info as { destination?: string; lamports?: number | string };
+        if (info.destination === recipientAddress && String(info.lamports) === expectedAmount) {
+            matchedInstructionIndexes.add(index);
+            return;
+        }
+    }
+
+    throw new Error(`No system transfer instruction found for recipient ${recipientAddress}`);
+}
+
+async function validateParsedInstructionAllowlist(
+    instructions: ParsedInstruction[],
+    matchedPaymentInstructionIndexes: Set<number>,
+    options: {
+        allowedAtaOwners: Set<string>;
+        expectedAtaPayer: string | undefined;
+        expectedMint: string | undefined;
+        expectedTokenProgram: string | undefined;
+        requiredAtaOwners: Set<string>;
+    },
+) {
+    const createdAtaOwners = new Set<string>();
+
+    for (const [index, ix] of instructions.entries()) {
+        const programId = parsedProgramId(ix);
+
+        if (programId === COMPUTE_BUDGET_PROGRAM) {
+            continue;
+        }
+
+        if (programId === SYSTEM_PROGRAM) {
+            if (matchedPaymentInstructionIndexes.has(index)) continue;
+            throw new Error('Unexpected System Program instruction in payment transaction');
+        }
+
+        if (programId === TOKEN_PROGRAM || programId === TOKEN_2022_PROGRAM) {
+            if (matchedPaymentInstructionIndexes.has(index)) continue;
+            throw new Error('Unexpected Token Program instruction in payment transaction');
+        }
+
+        if (programId === ASSOCIATED_TOKEN_PROGRAM) {
+            const owner = await validateParsedAtaCreationInstruction(ix, options);
+            createdAtaOwners.add(owner);
+            continue;
+        }
+
+        throw new Error(`Unexpected program instruction in payment transaction: ${programId ?? 'unknown'}`);
+    }
+
+    for (const owner of options.requiredAtaOwners) {
+        if (!createdAtaOwners.has(owner)) {
+            throw new Error(`Missing required ATA creation instruction for split recipient ${owner}`);
+        }
     }
 }
 
-function verifySolTransfer(transfers: ParsedInstruction[], recipientAddress: string, expectedAmount: string) {
-    const index = transfers.findIndex(ix => {
-        const info = ix.parsed!.info as { destination: string; lamports: number | string };
-        return info.destination === recipientAddress && String(info.lamports) === expectedAmount;
+function parsedProgramId(ix: ParsedInstruction): string | undefined {
+    if (ix.programId) return ix.programId;
+    if (ix.program === 'system') return SYSTEM_PROGRAM;
+    if (ix.program === 'compute-budget') return COMPUTE_BUDGET_PROGRAM;
+    if (ix.program === 'spl-associated-token-account') return ASSOCIATED_TOKEN_PROGRAM;
+    return undefined;
+}
+
+async function validateParsedAtaCreationInstruction(
+    ix: ParsedInstruction,
+    options: {
+        allowedAtaOwners: Set<string>;
+        expectedAtaPayer: string | undefined;
+        expectedMint: string | undefined;
+        expectedTokenProgram: string | undefined;
+    },
+): Promise<string> {
+    if (!options.expectedMint) {
+        throw new Error('ATA creation is not allowed for native SOL payments');
+    }
+    if (ix.parsed?.type !== 'createIdempotent') {
+        throw new Error('Only idempotent ATA creation is allowed');
+    }
+
+    const info = ix.parsed.info;
+    const payer = stringField(info, 'source', 'payer');
+    const ata = stringField(info, 'account', 'associatedAccount', 'associatedTokenAddress');
+    const owner = stringField(info, 'wallet', 'owner');
+    const mint = stringField(info, 'mint');
+    const tokenProgram = stringField(info, 'tokenProgram') ?? options.expectedTokenProgram;
+
+    if (!payer || !ata || !owner || !mint || !tokenProgram) {
+        throw new Error('ATA creation parsed instruction is missing required fields');
+    }
+    if (options.expectedAtaPayer && payer !== options.expectedAtaPayer) {
+        throw new Error('ATA payer must match the transaction fee payer');
+    }
+    if (mint !== options.expectedMint) {
+        throw new Error('ATA creation mint does not match the charge currency');
+    }
+    if (tokenProgram !== TOKEN_PROGRAM && tokenProgram !== TOKEN_2022_PROGRAM) {
+        throw new Error('ATA creation uses an unsupported token program');
+    }
+    if (options.expectedTokenProgram && tokenProgram !== options.expectedTokenProgram) {
+        throw new Error('ATA creation token program does not match methodDetails.tokenProgram');
+    }
+
+    const [expectedAta] = await findAssociatedTokenPda({
+        mint: address(mint),
+        owner: address(owner),
+        tokenProgram: address(tokenProgram),
     });
-
-    if (index === -1) {
-        throw new Error(`No system transfer instruction found for recipient ${recipientAddress}`);
+    if (ata !== expectedAta) {
+        throw new Error('ATA creation address does not match owner/mint/token program');
     }
 
-    const [transfer] = transfers.splice(index, 1);
-
-    const info = transfer.parsed!.info as { destination: string; lamports: number };
-    if (String(info.lamports) !== expectedAmount) {
-        throw new Error(
-            `Amount mismatch for ${recipientAddress}: expected ${expectedAmount} lamports, got ${info.lamports}`,
-        );
+    if (!options.allowedAtaOwners.has(owner)) {
+        throw new Error('ATA creation owner is not authorized by the challenge');
     }
+
+    return owner;
+}
+
+function stringField(info: Record<string, unknown>, ...keys: string[]): string | undefined {
+    for (const key of keys) {
+        const value = info[key];
+        if (typeof value === 'string') return value;
+    }
+    return undefined;
 }
 
 // ── Types ──
@@ -444,7 +1004,7 @@ type ChallengeRequest = {
         feePayerKey?: string;
         network?: string;
         recentBlockhash?: string;
-        splits?: Array<{ amount: string; memo?: string; recipient: string }>;
+        splits?: Array<{ amount: string; ataCreationRequired?: boolean; memo?: string; recipient: string }>;
         tokenProgram?: string;
     };
     recipient: string;
@@ -622,6 +1182,8 @@ export declare namespace charge {
         splits?: Array<{
             /** Amount in base units (same asset as primary). */
             amount: string;
+            /** If true, create the split recipient ATA idempotently before payment. */
+            ataCreationRequired?: boolean;
             /** Optional memo (max 566 bytes). */
             memo?: string;
             /** Base58-encoded recipient of this split. */

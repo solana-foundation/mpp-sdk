@@ -28,6 +28,7 @@ use crate::program::multi_delegator::{
 ///
 /// The signer is the user/client; they pay fees.
 /// Returns the serialized, signed transaction as a standard base64 string.
+#[allow(clippy::too_many_arguments)]
 pub async fn build_init_multi_delegate_tx(
     signer: &dyn SolanaSigner,
     mint: &Pubkey,
@@ -66,6 +67,7 @@ pub async fn build_init_multi_delegate_tx(
 /// create a new delegation at a fresh `nonce`.
 ///
 /// Returns the serialized, signed transaction as a standard base64 string.
+#[allow(clippy::too_many_arguments)]
 pub async fn build_update_delegation_tx(
     signer: &dyn SolanaSigner,
     mint: &Pubkey,

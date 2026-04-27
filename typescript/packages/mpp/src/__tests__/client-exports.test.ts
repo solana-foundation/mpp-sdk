@@ -4,7 +4,12 @@
  * Validates that the client barrel modules expose the expected public API.
  */
 import { solana } from '../client/Methods.js';
-import { charge, solana as solanaFromIndex } from '../client/index.js';
+import {
+    charge,
+    selectSolanaChargeChallenge,
+    selectSolanaChargeChallengeFromResponse,
+    solana as solanaFromIndex,
+} from '../client/index.js';
 
 describe('client/Methods.ts', () => {
     test('solana is a callable function', () => {
@@ -24,5 +29,11 @@ describe('client/index.ts', () => {
     test('exports solana namespace', () => {
         expect(typeof solanaFromIndex).toBe('function');
         expect(solanaFromIndex).toBe(solana);
+    });
+
+    test('exports challenge selectors', () => {
+        expect(typeof selectSolanaChargeChallenge).toBe('function');
+        expect(typeof selectSolanaChargeChallengeFromResponse).toBe('function');
+        expect(solanaFromIndex.selectChargeChallenge).toBe(selectSolanaChargeChallenge);
     });
 });

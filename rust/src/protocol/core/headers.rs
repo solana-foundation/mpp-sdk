@@ -72,13 +72,76 @@ pub fn parse_www_authenticate_all<'a>(
 ) -> Vec<Result<PaymentChallenge, Error>> {
     headers
         .into_iter()
-        .filter(|h| {
-            h.trim_start()
-                .get(..8)
-                .is_some_and(|s| s.eq_ignore_ascii_case("payment "))
-        })
+        .flat_map(split_payment_challenge_values)
         .map(parse_www_authenticate)
         .collect()
+}
+
+fn split_payment_challenge_values(header: &str) -> Vec<&str> {
+    let bytes = header.as_bytes();
+    let mut starts = Vec::new();
+    let mut in_quote = false;
+    let mut escaped = false;
+    let mut i = 0;
+
+    while i < bytes.len() {
+        let byte = bytes[i];
+        if in_quote {
+            if escaped {
+                escaped = false;
+            } else if byte == b'\\' {
+                escaped = true;
+            } else if byte == b'"' {
+                in_quote = false;
+            }
+            i += 1;
+            continue;
+        }
+
+        if byte == b'"' {
+            in_quote = true;
+            i += 1;
+            continue;
+        }
+
+        if is_payment_scheme_start(bytes, i) {
+            starts.push(i);
+            i += PAYMENT_SCHEME.len();
+            continue;
+        }
+
+        i += 1;
+    }
+
+    starts
+        .iter()
+        .enumerate()
+        .map(|(index, start)| {
+            let end = starts.get(index + 1).copied().unwrap_or(header.len());
+            header[*start..end].trim().trim_end_matches(',').trim()
+        })
+        .filter(|chunk| !chunk.is_empty())
+        .collect()
+}
+
+fn is_payment_scheme_start(bytes: &[u8], index: usize) -> bool {
+    let end = index.saturating_add(PAYMENT_SCHEME.len());
+    if end >= bytes.len() {
+        return false;
+    }
+    if !bytes[index..end].eq_ignore_ascii_case(PAYMENT_SCHEME.as_bytes()) {
+        return false;
+    }
+    if !bytes[end].is_ascii_whitespace() {
+        return false;
+    }
+
+    let mut previous = index;
+    while previous > 0 && bytes[previous - 1].is_ascii_whitespace() {
+        previous -= 1;
+    }
+
+    previous == 0 || bytes[previous - 1] == b','
 }
 
 /// Format a PaymentChallenge as a WWW-Authenticate header value.
@@ -472,6 +535,34 @@ mod tests {
         let results = parse_www_authenticate_all(vec![h1, h2]);
         assert_eq!(results.len(), 2);
         assert_eq!(results[0].as_ref().unwrap().id, "a");
+        assert_eq!(results[1].as_ref().unwrap().id, "b");
+    }
+
+    #[test]
+    fn parse_all_merged_payment_header() {
+        let header = concat!(
+            "Payment id=\"a\", realm=\"r1\", method=\"solana\", intent=\"charge\", request=\"e30\", ",
+            "Payment id=\"b\", realm=\"r2\", method=\"solana\", intent=\"charge\", request=\"e30\"",
+        );
+
+        let results = parse_www_authenticate_all(vec![header]);
+
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0].as_ref().unwrap().id, "a");
+        assert_eq!(results[1].as_ref().unwrap().id, "b");
+    }
+
+    #[test]
+    fn parse_all_merged_payment_header_ignores_payment_inside_quotes() {
+        let header = concat!(
+            "Payment id=\"a\", realm=\"api, Payment realm\", method=\"solana\", intent=\"charge\", request=\"e30\", ",
+            "Payment id=\"b\", realm=\"r2\", method=\"solana\", intent=\"charge\", request=\"e30\"",
+        );
+
+        let results = parse_www_authenticate_all(vec![header]);
+
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0].as_ref().unwrap().realm, "api, Payment realm");
         assert_eq!(results[1].as_ref().unwrap().id, "b");
     }
 
