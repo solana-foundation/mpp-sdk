@@ -162,12 +162,13 @@ async function payWithWallet() {
     const decimals = md.decimals ?? 6;
     const sourceAta = bs58Decode(await findATA(walletB58, mint!, tokenProg));
     const destAta = bs58Decode(await findATA(request.recipient, mint!, tokenProg));
-    instructions.push(createAtaIdempotent(ataPayer, destAta, recipientPubkey, mintPubkey, tokenProg));
     instructions.push(tokenTransferChecked(sourceAta, mintPubkey, destAta, walletPubkey, primaryAmount, decimals, tokenProg));
     for (const s of splits) {
       const splitRecipient = bs58Decode(s.recipient);
       const splitAta = bs58Decode(await findATA(s.recipient, mint!, tokenProg));
-      instructions.push(createAtaIdempotent(ataPayer, splitAta, splitRecipient, mintPubkey, tokenProg));
+      if (shouldCreateSplitAta(hasSeparateFeePayer, s)) {
+        instructions.push(createAtaIdempotent(ataPayer, splitAta, splitRecipient, mintPubkey, tokenProg));
+      }
       instructions.push(tokenTransferChecked(sourceAta, mintPubkey, splitAta, walletPubkey, BigInt(s.amount), decimals, tokenProg));
     }
   }
@@ -280,12 +281,13 @@ async function payTestMode() {
     const decimals = md.decimals ?? 6;
     const sourceAta = bs58Decode(await findATA(publicKeyB58, mint!, tokenProg));
     const destAta = bs58Decode(await findATA(request.recipient, mint!, tokenProg));
-    instructions.push(createAtaIdempotent(ataPayer, destAta, recipientPubkey, mintPubkey, tokenProg));
     instructions.push(tokenTransferChecked(sourceAta, mintPubkey, destAta, publicKeyRaw, primaryAmount, decimals, tokenProg));
     for (const s of splits) {
       const splitRecipient = bs58Decode(s.recipient);
       const splitAta = bs58Decode(await findATA(s.recipient, mint!, tokenProg));
-      instructions.push(createAtaIdempotent(ataPayer, splitAta, splitRecipient, mintPubkey, tokenProg));
+      if (shouldCreateSplitAta(hasSeparateFeePayer, s)) {
+        instructions.push(createAtaIdempotent(ataPayer, splitAta, splitRecipient, mintPubkey, tokenProg));
+      }
       instructions.push(tokenTransferChecked(sourceAta, mintPubkey, splitAta, publicKeyRaw, BigInt(s.amount), decimals, tokenProg));
     }
   }
@@ -426,6 +428,7 @@ async function findATA(owner: string, mint: string, tokenProg: string) {
 // ── Transaction building ──
 
 type Instruction = { programId: string; accounts: { pubkey: Uint8Array; isSigner: boolean; isWritable: boolean }[]; data: Uint8Array };
+type Split = { recipient: string; amount: string; ataCreationRequired?: boolean };
 
 const COMPUTE_BUDGET_PROGRAM = 'ComputeBudget111111111111111111111111111111';
 const ATA_PROGRAM = 'ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL';
@@ -455,6 +458,10 @@ function createAtaIdempotent(payer: Uint8Array, ata: Uint8Array, owner: Uint8Arr
       { pubkey: bs58Decode(tokenProg), isSigner: false, isWritable: false },
     ],
   };
+}
+
+function shouldCreateSplitAta(hasSeparateFeePayer: boolean, split: Split): boolean {
+  return !hasSeparateFeePayer || split.ataCreationRequired === true;
 }
 
 function systemTransfer(from: Uint8Array, to: Uint8Array, lamports: bigint): Instruction {

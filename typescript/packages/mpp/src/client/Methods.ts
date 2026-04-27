@@ -1,4 +1,4 @@
-import { charge as charge_ } from './Charge.js';
+import { buildChargeTransaction, charge as charge_ } from './Charge.js';
 import { selectSolanaChargeChallenge } from './ChallengeSelection.js';
 
 /**
@@ -19,9 +19,11 @@ import { selectSolanaChargeChallenge } from './ChallengeSelection.js';
  */
 export const solana: {
     (parameters: solana.Parameters): ReturnType<typeof charge_>;
+    buildChargeTransaction: typeof buildChargeTransaction;
     charge: typeof charge_;
     selectChargeChallenge: typeof selectSolanaChargeChallenge;
 } = Object.assign((parameters: solana.Parameters) => charge_(parameters), {
+    buildChargeTransaction,
     charge: charge_,
     selectChargeChallenge: selectSolanaChargeChallenge,
 });

@@ -25,6 +25,7 @@ import {
     setTransactionMessageLifetimeUsingBlockhash,
     type Blockhash,
 } from '@solana/kit';
+import { buildChargeTransaction } from '../client/Charge.js';
 import { charge } from '../server/Charge.js';
 import { ASSOCIATED_TOKEN_PROGRAM, CASH, SYSTEM_PROGRAM, TOKEN_2022_PROGRAM, TOKEN_PROGRAM } from '../constants.js';
 
@@ -992,6 +993,54 @@ test('pull: accepts valid SPL token transfer', async () => {
             amount: '1000000',
             currency: USDC_MINT,
             decimals: 6,
+        }),
+        request: {} as any,
+    });
+
+    expect(receipt.status).toBe('success');
+    expect(receipt.reference).toBe(SIGNATURE);
+});
+
+test('client buildChargeTransaction creates verifier-compatible SPL transaction', async () => {
+    const signer = await generateKeyPairSigner();
+    const method = charge({
+        recipient: RECIPIENT,
+        currency: USDC_MINT,
+        decimals: 6,
+        network: 'devnet',
+        rpcUrl: 'https://mock-rpc',
+        store,
+    });
+
+    const [expectedAta] = await findAssociatedTokenPda({
+        owner: address(RECIPIENT),
+        mint: address(USDC_MINT),
+        tokenProgram: address(TOKEN_PROGRAM),
+    });
+    mockServerBroadcastFetch(splTransferTx(expectedAta, USDC_MINT, '1000000'));
+
+    const tx = await buildChargeTransaction({
+        request: {
+            amount: '1000000',
+            currency: USDC_MINT,
+            recipient: RECIPIENT,
+            methodDetails: {
+                decimals: 6,
+                network: 'devnet',
+                recentBlockhash: BLOCKHASH,
+                tokenProgram: TOKEN_PROGRAM,
+            },
+        },
+        rpcUrl: 'https://mock-rpc',
+        signer,
+    });
+
+    const receipt = await method.verify({
+        credential: transactionCredential(tx, {
+            amount: '1000000',
+            currency: USDC_MINT,
+            decimals: 6,
+            tokenProgram: TOKEN_PROGRAM,
         }),
         request: {} as any,
     });

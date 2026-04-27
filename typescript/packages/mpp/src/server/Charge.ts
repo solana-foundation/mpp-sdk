@@ -514,7 +514,7 @@ async function validateInstructionAllowlist(
 }
 
 function validateComputeBudgetInstruction(ix: CompiledInstruction) {
-    if (ix.accountIndices.length !== 0) {
+    if ((ix.accountIndices ?? []).length !== 0) {
         throw new Error('Compute budget instruction must not have accounts');
     }
 
