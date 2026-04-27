@@ -39,6 +39,7 @@ solana-transaction-status = { version = "3.1", default-features = false }
 # deps is deferred as tech debt (see the "Follow-up: align charge.rs" note).
 # Tracking issue: TBD.
 solana-client = { version = "3.1", default-features = false }            # nonblocking::rpc_client::RpcClient, rpc_config::RpcAccountInfoConfig
+solana-account-decoder-client-types = { version = "3.1", default-features = false } # UiAccount + UiAccountEncoding for get_ui_account_with_config (replaces deprecated get_account_with_config)
 solana-sdk-ids = { version = "3.1", default-features = false }           # ed25519_program, sysvar::instructions
 solana-ed25519-program = { version = "3.0", default-features = false }   # canonical builder for the ed25519 precompile instruction (extracted out of solana-sdk on the 3.x track)
 solana-compute-budget-interface = { version = "3.0", default-features = false }  # ComputeBudgetInstruction builder (highest published 3.x is 3.0.0)
