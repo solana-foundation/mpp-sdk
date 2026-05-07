@@ -8,6 +8,7 @@ use std::{
 };
 
 use serde_json::json;
+use solana_mpp::protocol::intents::ChargeRequest;
 use solana_mpp::server::{ChargeOptions, Config, Mpp};
 use solana_mpp::solana_keychain::{memory::MemorySigner, SolanaSigner};
 use solana_mpp::{
@@ -199,9 +200,32 @@ fn settle_payment(
     authorization: &str,
 ) -> Result<(String, String), Box<dyn std::error::Error + Send + Sync>> {
     let credential = parse_authorization(authorization)?;
-    let receipt = runtime.block_on(state.mpp.verify_credential(&credential))?;
+    // Build the route's expected request and use the route-aware verification
+    // path. With a single resource path this server isn't itself vulnerable to
+    // cross-route replay, but we model the safe pattern so anyone copying the
+    // example onto a multi-route server is protected by default.
+    let expected = expected_request_for_route(state)?;
+    let receipt = runtime.block_on(
+        state
+            .mpp
+            .verify_credential_with_expected(&credential, &expected),
+    )?;
     let settlement = receipt.reference.clone();
     Ok((receipt.to_header()?, settlement))
+}
+
+fn expected_request_for_route(
+    state: &InteropState,
+) -> Result<ChargeRequest, Box<dyn std::error::Error + Send + Sync>> {
+    let challenge = state.mpp.charge_with_options(
+        &state.price,
+        ChargeOptions {
+            description: Some("Surfpool-backed protected content"),
+            fee_payer: true,
+            ..Default::default()
+        },
+    )?;
+    Ok(challenge.request.decode()?)
 }
 
 fn write_json_response(
