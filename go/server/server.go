@@ -180,7 +180,74 @@ func (m *Mpp) ChargeWithOptions(ctx context.Context, amount string, options Char
 }
 
 // VerifyCredential verifies either a transaction payload or a signature payload.
+//
+// This is the simple API and is appropriate for servers that only gate a single
+// route. Servers that gate multiple routes at different prices on the same
+// secret key MUST use VerifyCredentialWithExpected so the route's expected
+// amount is compared to the credential's claimed amount; otherwise a
+// credential issued for a cheaper route can be replayed at an expensive one.
+//
+// Even on the simple API, a Tier-2 pinned-field check enforces that the
+// credential's method/intent/realm/currency/recipient match this Mpp's
+// configuration — so cross-route replay across instances with different
+// recipients/currencies is blocked, and only the per-call amount remains
+// unpinned (which is what VerifyCredentialWithExpected covers).
 func (m *Mpp) VerifyCredential(ctx context.Context, credential mpp.PaymentCredential) (mpp.Receipt, error) {
+	request, details, payload, err := m.verifyChallengeAndDecode(credential)
+	if err != nil {
+		return mpp.Receipt{}, err
+	}
+	return m.verifyPayload(ctx, credential, request, details, payload)
+}
+
+// VerifyCredentialWithExpected verifies a credential against the route's
+// expected charge request. The amount, currency, and recipient on the
+// credential's claimed challenge must match `expected`; afterward, settlement
+// (transaction broadcast and on-chain checks) runs against `expected` —
+// not against the credential's claims — so a credential built for a different
+// route's request cannot succeed even if its other fields line up.
+func (m *Mpp) VerifyCredentialWithExpected(
+	ctx context.Context,
+	credential mpp.PaymentCredential,
+	expected intents.ChargeRequest,
+) (mpp.Receipt, error) {
+	credRequest, _, payload, err := m.verifyChallengeAndDecode(credential)
+	if err != nil {
+		return mpp.Receipt{}, err
+	}
+	if credRequest.Amount != expected.Amount {
+		return mpp.Receipt{}, mpp.NewError(
+			mpp.ErrCodeAmountMismatch,
+			fmt.Sprintf("amount mismatch: credential has %s but endpoint expects %s",
+				credRequest.Amount, expected.Amount),
+		)
+	}
+	if credRequest.Currency != expected.Currency {
+		return mpp.Receipt{}, mpp.NewError(
+			mpp.ErrCodeChallengeMismatch,
+			fmt.Sprintf("currency mismatch: credential has %s but endpoint expects %s",
+				credRequest.Currency, expected.Currency),
+		)
+	}
+	if credRequest.Recipient != expected.Recipient {
+		return mpp.Receipt{}, mpp.NewError(
+			mpp.ErrCodeRecipientMismatch,
+			"recipient mismatch: credential was issued for a different recipient",
+		)
+	}
+	expectedDetails, err := decodeMethodDetails(expected.MethodDetails)
+	if err != nil {
+		return mpp.Receipt{}, err
+	}
+	return m.verifyPayload(ctx, credential, expected, expectedDetails, payload)
+}
+
+// verifyChallengeAndDecode runs Tier-1 (HMAC + expiry) and Tier-2 (pinned-field
+// backstop) checks, then returns the credential-decoded request, method
+// details, and payload for downstream settlement.
+func (m *Mpp) verifyChallengeAndDecode(
+	credential mpp.PaymentCredential,
+) (intents.ChargeRequest, protocol.MethodDetails, protocol.CredentialPayload, error) {
 	challenge := mpp.PaymentChallenge{
 		ID:      credential.Challenge.ID,
 		Realm:   credential.Challenge.Realm,
@@ -192,29 +259,89 @@ func (m *Mpp) VerifyCredential(ctx context.Context, credential mpp.PaymentCreden
 		Opaque:  credential.Challenge.Opaque,
 	}
 	if !challenge.Verify(m.secretKey) {
-		return mpp.Receipt{}, mpp.NewError(mpp.ErrCodeChallengeMismatch, "challenge ID mismatch")
+		return intents.ChargeRequest{}, protocol.MethodDetails{}, protocol.CredentialPayload{},
+			mpp.NewError(mpp.ErrCodeChallengeMismatch, "challenge ID mismatch")
 	}
 	if challenge.IsExpired(time.Now()) {
-		return mpp.Receipt{}, mpp.NewError(mpp.ErrCodeChallengeExpired, fmt.Sprintf("challenge expired at %s", challenge.Expires))
+		return intents.ChargeRequest{}, protocol.MethodDetails{}, protocol.CredentialPayload{},
+			mpp.NewError(mpp.ErrCodeChallengeExpired, fmt.Sprintf("challenge expired at %s", challenge.Expires))
 	}
 	var request intents.ChargeRequest
 	if err := challenge.Request.Decode(&request); err != nil {
-		return mpp.Receipt{}, err
+		return intents.ChargeRequest{}, protocol.MethodDetails{}, protocol.CredentialPayload{}, err
 	}
-	var details protocol.MethodDetails
-	if request.MethodDetails != nil {
-		raw, err := json.Marshal(request.MethodDetails)
-		if err != nil {
-			return mpp.Receipt{}, err
-		}
-		if err := json.Unmarshal(raw, &details); err != nil {
-			return mpp.Receipt{}, err
-		}
+	if err := m.verifyPinnedFields(credential, request); err != nil {
+		return intents.ChargeRequest{}, protocol.MethodDetails{}, protocol.CredentialPayload{}, err
+	}
+	details, err := decodeMethodDetails(request.MethodDetails)
+	if err != nil {
+		return intents.ChargeRequest{}, protocol.MethodDetails{}, protocol.CredentialPayload{}, err
 	}
 	var payload protocol.CredentialPayload
 	if err := credential.PayloadAs(&payload); err != nil {
-		return mpp.Receipt{}, err
+		return intents.ChargeRequest{}, protocol.MethodDetails{}, protocol.CredentialPayload{}, err
 	}
+	return request, details, payload, nil
+}
+
+// verifyPinnedFields is the Tier-2 backstop. After Tier-1 (HMAC) confirms the
+// challenge was issued by this server, this compares fields that are fixed at
+// Mpp construction time. The HMAC ID is computed using the server's own realm
+// (not the echoed one), so a tampered echoed realm/method/intent would
+// otherwise pass HMAC and reach settlement unflagged. Currency and recipient
+// live inside the HMAC'd request bytes, but pinning them here catches
+// cross-instance replay where two Mpps share a secret but differ in
+// recipient/currency.
+func (m *Mpp) verifyPinnedFields(credential mpp.PaymentCredential, request intents.ChargeRequest) error {
+	const methodName = "solana"
+	if string(credential.Challenge.Method) != methodName {
+		return mpp.NewError(mpp.ErrCodeChallengeMismatch,
+			fmt.Sprintf("credential method %q does not match this server (expected %q)",
+				credential.Challenge.Method, methodName))
+	}
+	if !credential.Challenge.Intent.IsCharge() {
+		return mpp.NewError(mpp.ErrCodeChallengeMismatch,
+			fmt.Sprintf("credential intent %q is not a charge", credential.Challenge.Intent))
+	}
+	if credential.Challenge.Realm != m.realm {
+		return mpp.NewError(mpp.ErrCodeChallengeMismatch,
+			fmt.Sprintf("credential realm %q does not match this server (expected %q)",
+				credential.Challenge.Realm, m.realm))
+	}
+	if request.Currency != m.currency {
+		return mpp.NewError(mpp.ErrCodeChallengeMismatch,
+			fmt.Sprintf("credential currency %q does not match this server (expected %q)",
+				request.Currency, m.currency))
+	}
+	if request.Recipient != m.recipient.String() {
+		return mpp.NewError(mpp.ErrCodeRecipientMismatch,
+			"credential recipient does not match this server")
+	}
+	return nil
+}
+
+func decodeMethodDetails(value any) (protocol.MethodDetails, error) {
+	if value == nil {
+		return protocol.MethodDetails{}, nil
+	}
+	var details protocol.MethodDetails
+	raw, err := json.Marshal(value)
+	if err != nil {
+		return protocol.MethodDetails{}, err
+	}
+	if err := json.Unmarshal(raw, &details); err != nil {
+		return protocol.MethodDetails{}, err
+	}
+	return details, nil
+}
+
+func (m *Mpp) verifyPayload(
+	ctx context.Context,
+	credential mpp.PaymentCredential,
+	request intents.ChargeRequest,
+	details protocol.MethodDetails,
+	payload protocol.CredentialPayload,
+) (mpp.Receipt, error) {
 	switch payload.Type {
 	case "transaction":
 		return m.verifyTransaction(ctx, credential, request, details, payload)

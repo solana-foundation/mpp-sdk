@@ -35,26 +35,9 @@ func PaymentMiddleware(m *Mpp, chargeFn ChargeFunc) func(http.Handler) http.Hand
 				return
 			}
 
-			// Check for a payment credential in the Authorization header.
-			authHeader := r.Header.Get(mpp.AuthorizationHeader)
-			if paymentToken, ok := mpp.ExtractPaymentScheme(authHeader); ok && paymentToken != "" {
-				credential, err := mpp.ParseAuthorization(authHeader)
-				if err == nil {
-					receipt, err := m.VerifyCredential(r.Context(), credential)
-					if err == nil {
-						receiptHeader, fmtErr := mpp.FormatReceipt(receipt)
-						if fmtErr == nil {
-							w.Header().Set(mpp.PaymentReceiptHeader, receiptHeader)
-						}
-						ctx := context.WithValue(r.Context(), receiptContextKey, receipt)
-						next.ServeHTTP(w, r.WithContext(ctx))
-						return
-					}
-				}
-				// Invalid credential — fall through to re-challenge.
-			}
-
-			// Generate a challenge for this request.
+			// Resolve the route's expected charge first so verification can be
+			// route-aware: the credential's claimed amount is compared to this
+			// route's expected amount, not just to itself.
 			amount, opts, err := chargeFn(r)
 			if err != nil {
 				http.Error(w, "charge function error", http.StatusInternalServerError)
@@ -65,6 +48,28 @@ func PaymentMiddleware(m *Mpp, chargeFn ChargeFunc) func(http.Handler) http.Hand
 			if err != nil {
 				http.Error(w, "failed to create challenge", http.StatusInternalServerError)
 				return
+			}
+
+			// Check for a payment credential in the Authorization header.
+			authHeader := r.Header.Get(mpp.AuthorizationHeader)
+			if paymentToken, ok := mpp.ExtractPaymentScheme(authHeader); ok && paymentToken != "" {
+				credential, err := mpp.ParseAuthorization(authHeader)
+				if err == nil {
+					var expected mpp.ChargeRequest
+					if decodeErr := challenge.Request.Decode(&expected); decodeErr == nil {
+						receipt, verifyErr := m.VerifyCredentialWithExpected(r.Context(), credential, expected)
+						if verifyErr == nil {
+							receiptHeader, fmtErr := mpp.FormatReceipt(receipt)
+							if fmtErr == nil {
+								w.Header().Set(mpp.PaymentReceiptHeader, receiptHeader)
+							}
+							ctx := context.WithValue(r.Context(), receiptContextKey, receipt)
+							next.ServeHTTP(w, r.WithContext(ctx))
+							return
+						}
+					}
+				}
+				// Invalid credential — fall through to re-challenge.
 			}
 
 			wwwAuth, err := mpp.FormatWWWAuthenticate(challenge)
