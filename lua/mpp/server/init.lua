@@ -108,7 +108,59 @@ function Server:charge_with_options(amount, options)
   )
 end
 
+--- Verify a credential (simple API).
+--
+-- This is appropriate for servers that only gate a single route. Servers that
+-- gate multiple routes at different prices on the same secret key MUST use
+-- ``verify_credential_with_expected`` so the route's expected amount is
+-- compared to the credential's claimed amount; otherwise a credential issued
+-- for a cheaper route can be replayed at an expensive one.
+--
+-- A Tier-2 pinned-field check inside this method also enforces that the
+-- credential's method/intent/realm/currency/recipient match the server's
+-- configuration, so cross-route replay across instances with different
+-- recipients/currencies is blocked.
 function Server:verify_credential(credential_value, now_epoch)
+  local request, _method_details, payload = self:_verify_challenge_and_decode(credential_value, now_epoch)
+  return self:_finalize_verification(credential_value, request, payload)
+end
+
+--- Verify a credential against the route's expected charge request.
+--
+-- The amount/currency/recipient on the credential's claimed challenge must
+-- match ``expected``. Settlement (the user-supplied verify_payment callback)
+-- then runs against ``expected`` — not the credential's claims — so a
+-- credential built for a different route's request cannot succeed.
+function Server:verify_credential_with_expected(credential_value, expected, now_epoch)
+  if type(expected) ~= 'table' then
+    error('expected request table is required')
+  end
+  local cred_request, _method_details, payload = self:_verify_challenge_and_decode(credential_value, now_epoch)
+
+  if cred_request.amount ~= expected.amount then
+    error(string.format(
+      'amount mismatch: credential has %s but endpoint expects %s',
+      tostring(cred_request.amount), tostring(expected.amount)
+    ))
+  end
+  if cred_request.currency ~= expected.currency then
+    error(string.format(
+      'currency mismatch: credential has %s but endpoint expects %s',
+      tostring(cred_request.currency), tostring(expected.currency)
+    ))
+  end
+  if cred_request.recipient ~= expected.recipient then
+    error('recipient mismatch: credential was issued for a different recipient')
+  end
+
+  return self:_finalize_verification(credential_value, expected, payload)
+end
+
+--- Tier-1 (HMAC + expiry) and Tier-2 (pinned-field) checks.
+--
+-- Returns the credential-decoded ``request``, parsed ``method_details``, and
+-- the credential payload for downstream settlement.
+function Server:_verify_challenge_and_decode(credential_value, now_epoch)
   local echoed = credential_value.challenge
   local challenge_value = challenge.challenge_from_table({
     id = echoed.id,
@@ -132,6 +184,10 @@ function Server:verify_credential(credential_value, now_epoch)
   if not request then
     error(decode_err)
   end
+
+  -- Tier-2: pinned-field backstop.
+  self:_verify_pinned_fields(echoed, request)
+
   local method_details = request.methodDetails or {}
   local payload = challenge.payload_as(credential_value) or {}
   local payload_type = payload.type
@@ -141,6 +197,42 @@ function Server:verify_credential(credential_value, now_epoch)
   if payload_type == 'signature' and method_details.feePayer then
     error('type="signature" credentials cannot be used with fee sponsorship')
   end
+
+  return request, method_details, payload
+end
+
+function Server:_verify_pinned_fields(echoed, request)
+  local method_name = 'solana'
+  if echoed.method ~= method_name then
+    error(string.format(
+      "credential method '%s' does not match this server (expected '%s')",
+      tostring(echoed.method), method_name
+    ))
+  end
+  if not types.is_charge_intent(echoed.intent) then
+    error(string.format("credential intent '%s' is not a charge", tostring(echoed.intent)))
+  end
+  -- HMAC ID is computed using the server's own realm (not the echoed one),
+  -- so a tampered echoed realm passes HMAC unless re-signed. Pin it here.
+  if echoed.realm ~= self.realm then
+    error(string.format(
+      "credential realm '%s' does not match this server (expected '%s')",
+      tostring(echoed.realm), tostring(self.realm)
+    ))
+  end
+  if request.currency ~= self.currency then
+    error(string.format(
+      "credential currency '%s' does not match this server (expected '%s')",
+      tostring(request.currency), tostring(self.currency)
+    ))
+  end
+  if request.recipient ~= self.recipient then
+    error('credential recipient does not match this server')
+  end
+end
+
+function Server:_finalize_verification(credential_value, request, payload)
+  local method_details = request.methodDetails or {}
   if type(self.verify_payment) ~= 'function' then
     error('verify_payment callback is required')
   end
@@ -169,7 +261,7 @@ function Server:verify_credential(credential_value, now_epoch)
     method = 'solana',
     timestamp = result.timestamp or os.date('!%Y-%m-%dT%H:%M:%SZ'),
     reference = reference,
-    challengeId = echoed.id,
+    challengeId = credential_value.challenge.id,
     externalId = request.externalId,
     status = result.status or types.RECEIPT_STATUS_SUCCESS,
   })

@@ -379,8 +379,68 @@ class Mpp:
         )
 
     async def verify_credential(self, credential: PaymentCredential) -> Receipt:
-        """Verify either a transaction or signature credential payload."""
-        # Reconstruct challenge from echo
+        """Verify either a transaction or signature credential payload.
+
+        This is the simple API and is appropriate for servers that only gate a
+        single route. Servers that gate multiple routes at different prices on
+        the same secret key MUST use ``verify_credential_with_expected`` so the
+        route's expected amount is compared to the credential's claimed amount;
+        otherwise a credential issued for a cheaper route can be replayed at
+        an expensive one.
+
+        Even on the simple API, a Tier-2 pinned-field check enforces that the
+        credential's method/intent/realm/currency/recipient match this Mpp's
+        configuration, so cross-route replay across instances with different
+        recipients/currencies is blocked.
+        """
+        request, details, payload = self._verify_challenge_and_decode(credential)
+        return await self._verify_payload(credential, request, details, payload)
+
+    async def verify_credential_with_expected(
+        self,
+        credential: PaymentCredential,
+        expected: ChargeRequest,
+    ) -> Receipt:
+        """Verify a credential against the route's expected charge request.
+
+        The amount, currency, and recipient on the credential's claimed
+        challenge must match ``expected``. Settlement (transaction broadcast,
+        on-chain checks) then runs against ``expected`` — not the credential's
+        claims — so a credential built for a different route's request cannot
+        succeed even if its other fields line up.
+        """
+        cred_request, _details, payload = self._verify_challenge_and_decode(credential)
+
+        if cred_request.amount != expected.amount:
+            raise PaymentError(
+                f"amount mismatch: credential has {cred_request.amount} but endpoint expects {expected.amount}",
+                code="amount-mismatch",
+            )
+        if cred_request.currency != expected.currency:
+            raise PaymentError(
+                f"currency mismatch: credential has {cred_request.currency} but endpoint expects {expected.currency}",
+                code="challenge-mismatch",
+            )
+        if cred_request.recipient != expected.recipient:
+            raise PaymentError(
+                "recipient mismatch: credential was issued for a different recipient",
+                code="recipient-mismatch",
+            )
+
+        expected_details = MethodDetails()
+        if expected.method_details:
+            expected_details = MethodDetails.from_dict(expected.method_details)
+
+        return await self._verify_payload(credential, expected, expected_details, payload)
+
+    def _verify_challenge_and_decode(
+        self, credential: PaymentCredential
+    ) -> tuple[ChargeRequest, MethodDetails, CredentialPayload]:
+        """Run Tier-1 (HMAC + expiry) and Tier-2 (pinned-field) checks.
+
+        Returns the credential-decoded request, parsed method details, and the
+        credential payload for downstream settlement.
+        """
         challenge = PaymentChallenge(
             id=credential.challenge.id,
             realm=credential.challenge.realm,
@@ -398,17 +458,60 @@ class Mpp:
         if challenge.is_expired():
             raise ChallengeExpiredError(f"challenge expired at {challenge.expires}")
 
-        # Decode the request
         request = ChargeRequest.from_dict(challenge.decode_request())
 
-        # Parse method details
+        # Tier-2: pinned-field backstop. Even if the simple verify_credential
+        # path is used, fields that are fixed at Mpp construction time must
+        # match the credential.
+        self._verify_pinned_fields(credential, request)
+
         details = MethodDetails()
         if request.method_details:
             details = MethodDetails.from_dict(request.method_details)
 
-        # Parse credential payload
         payload = CredentialPayload.from_dict(credential.payload)
+        return request, details, payload
 
+    def _verify_pinned_fields(
+        self, credential: PaymentCredential, request: ChargeRequest
+    ) -> None:
+        method_name = "solana"
+        if credential.challenge.method != method_name:
+            raise PaymentError(
+                f"credential method '{credential.challenge.method}' does not match this server (expected '{method_name}')",
+                code="challenge-mismatch",
+            )
+        # IntentName equivalent: case-insensitive "charge" comparison.
+        if credential.challenge.intent.lower() != "charge":
+            raise PaymentError(
+                f"credential intent '{credential.challenge.intent}' is not a charge",
+                code="challenge-mismatch",
+            )
+        # The HMAC ID is computed using the server's own realm (not the echoed
+        # one), so a tampered echoed realm passes HMAC unless re-signed. Pin it.
+        if credential.challenge.realm != self._realm:
+            raise PaymentError(
+                f"credential realm '{credential.challenge.realm}' does not match this server (expected '{self._realm}')",
+                code="challenge-mismatch",
+            )
+        if request.currency != self._currency:
+            raise PaymentError(
+                f"credential currency '{request.currency}' does not match this server (expected '{self._currency}')",
+                code="challenge-mismatch",
+            )
+        if request.recipient != self._recipient:
+            raise PaymentError(
+                "credential recipient does not match this server",
+                code="recipient-mismatch",
+            )
+
+    async def _verify_payload(
+        self,
+        credential: PaymentCredential,
+        request: ChargeRequest,
+        details: MethodDetails,
+        payload: CredentialPayload,
+    ) -> Receipt:
         if payload.type == "transaction":
             return await self._verify_transaction(credential, request, details, payload)
         elif payload.type == "signature":
