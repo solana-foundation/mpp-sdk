@@ -131,27 +131,35 @@ export function charge(parameters: charge.Parameters) {
             : undefined,
 
         async request({ credential, request }) {
-            if (credential) {
-                return credential.challenge.request as typeof request;
-            }
+            // Always build the request from the route's options + server config.
+            // The mppx framework compares this `request` against
+            // `credential.challenge.request` to enforce route-aware binding
+            // (amount, currency, recipient, splits, etc). Returning
+            // `credential.challenge.request` here would short-circuit that
+            // check and let a credential issued for one route succeed at
+            // another — i.e. cross-route credential replay.
 
-            // Pre-fetch a recent blockhash so the client can skip an RPC call.
+            // Skip the blockhash fetch on the verify path: the prefetched
+            // blockhash is only useful for the client building its own
+            // transaction, which only happens when there's no credential.
             let recentBlockhash: string | undefined;
-            try {
-                const res = await fetch(rpcUrl, {
-                    body: JSON.stringify({
-                        id: 1,
-                        jsonrpc: '2.0',
-                        method: 'getLatestBlockhash',
-                        params: [{ commitment: 'confirmed' }],
-                    }),
-                    headers: { 'Content-Type': 'application/json' },
-                    method: 'POST',
-                });
-                const data = (await res.json()) as { result?: { value?: { blockhash?: string } } };
-                recentBlockhash = data.result?.value?.blockhash;
-            } catch {
-                // Non-fatal — client will fetch its own blockhash.
+            if (!credential) {
+                try {
+                    const res = await fetch(rpcUrl, {
+                        body: JSON.stringify({
+                            id: 1,
+                            jsonrpc: '2.0',
+                            method: 'getLatestBlockhash',
+                            params: [{ commitment: 'confirmed' }],
+                        }),
+                        headers: { 'Content-Type': 'application/json' },
+                        method: 'POST',
+                    });
+                    const data = (await res.json()) as { result?: { value?: { blockhash?: string } } };
+                    recentBlockhash = data.result?.value?.blockhash;
+                } catch {
+                    // Non-fatal — client will fetch its own blockhash.
+                }
             }
 
             return {
