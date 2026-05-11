@@ -11,9 +11,22 @@ use axum::{
     routing::get,
 };
 use solana_mpp::protocol::core::headers::parse_authorization;
+use solana_mpp::protocol::intents::ChargeRequest;
 use solana_mpp::server::{html, Config, Mpp};
 use std::collections::HashMap;
 use std::sync::Arc;
+
+const ROUTE_PRICE: &str = "0.01";
+
+/// Build the route's expected charge request. Threading this into
+/// `verify_credential_with_expected` is what protects against cross-route
+/// credential replay — without it, a credential issued for a cheaper route
+/// (or different recipient/currency) on the same server would be accepted.
+fn expected_request_for_route(mpp: &Mpp) -> Option<ChargeRequest> {
+    mpp.charge(ROUTE_PRICE)
+        .ok()
+        .and_then(|challenge| challenge.request.decode().ok())
+}
 
 const CSP: &str = "default-src 'self'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src *; worker-src 'self'";
 
@@ -28,22 +41,27 @@ async fn fortune(
         if auth_str.starts_with("Payment ") {
             match parse_authorization(auth_str) {
                 Ok(credential) => {
-                    match mpp.verify_credential(&credential).await {
-                        Ok(receipt) => {
-                            let ref_id = receipt.reference;
-                            return (
-                                StatusCode::OK,
-                                [
-                                    ("content-type", "application/json"),
-                                    ("payment-receipt", &ref_id),
-                                ],
-                                r#"{"fortune":"A smooth sea never made a skilled sailor."}"#,
-                            )
-                                .into_response();
-                        }
-                        Err(e) => {
-                            eprintln!("verify_credential failed: {e}");
-                            // Fall through to re-issue challenge
+                    if let Some(expected) = expected_request_for_route(&mpp) {
+                        match mpp
+                            .verify_credential_with_expected(&credential, &expected)
+                            .await
+                        {
+                            Ok(receipt) => {
+                                let ref_id = receipt.reference;
+                                return (
+                                    StatusCode::OK,
+                                    [
+                                        ("content-type", "application/json"),
+                                        ("payment-receipt", &ref_id),
+                                    ],
+                                    r#"{"fortune":"A smooth sea never made a skilled sailor."}"#,
+                                )
+                                    .into_response();
+                            }
+                            Err(e) => {
+                                eprintln!("verify_credential_with_expected failed: {e}");
+                                // Fall through to re-issue challenge
+                            }
                         }
                     }
                 }
@@ -70,7 +88,7 @@ async fn fortune(
     // Generate challenge.
     let challenge = mpp
         .charge_with_options(
-            "0.01",
+            ROUTE_PRICE,
             solana_mpp::server::ChargeOptions {
                 description: Some("Open a fortune cookie"),
                 ..Default::default()

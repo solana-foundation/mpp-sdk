@@ -409,7 +409,65 @@ impl Mpp {
             return Err(VerificationError::credential_mismatch("Recipient mismatch"));
         }
 
-        self.verify(credential, &request).await
+        // Pass the route's expected request — not the credential-decoded one —
+        // through to `verify`. From this point on, on-chain settlement checks
+        // (transfer routing, splits, fee payer, token program) compare the
+        // transaction against the route's configured method_details rather
+        // than whatever the credential happens to claim.
+        self.verify(credential, expected).await
+    }
+
+    /// Tier-2 pinned-field check.
+    ///
+    /// After Tier 1 (HMAC) confirms the echoed challenge was issued by this
+    /// server, this compares economically-significant fields against the
+    /// pinned `Mpp` configuration. It is the safety net for callers who use
+    /// the simple `verify_credential` API: even when the credential's
+    /// claimed request is trusted as-is, fields fixed at server construction
+    /// (method, intent, realm, currency, recipient) cannot silently diverge.
+    fn verify_pinned_fields(
+        &self,
+        credential: &PaymentCredential,
+        request: &ChargeRequest,
+    ) -> Result<(), VerificationError> {
+        if credential.challenge.method.as_str() != METHOD_NAME {
+            return Err(VerificationError::credential_mismatch(format!(
+                "Credential method '{}' does not match this server (expected '{METHOD_NAME}')",
+                credential.challenge.method
+            )));
+        }
+
+        if !credential.challenge.intent.is_charge() {
+            return Err(VerificationError::credential_mismatch(format!(
+                "Credential intent '{}' is not a charge",
+                credential.challenge.intent
+            )));
+        }
+
+        // The HMAC ID is computed using the server's own realm (not the echoed
+        // one), so a tampered realm would otherwise pass HMAC and reach
+        // settlement unflagged. Pin it explicitly.
+        if credential.challenge.realm != self.realm {
+            return Err(VerificationError::credential_mismatch(format!(
+                "Credential realm '{}' does not match this server (expected '{}')",
+                credential.challenge.realm, self.realm
+            )));
+        }
+
+        if request.currency != self.currency {
+            return Err(VerificationError::credential_mismatch(format!(
+                "Credential currency '{}' does not match this server (expected '{}')",
+                request.currency, self.currency
+            )));
+        }
+
+        if request.recipient.as_deref() != Some(self.recipient.as_str()) {
+            return Err(VerificationError::credential_mismatch(
+                "Credential recipient does not match this server",
+            ));
+        }
+
+        Ok(())
     }
 
     /// Verify a charge credential with an explicit request.
@@ -418,7 +476,7 @@ impl Mpp {
         credential: &PaymentCredential,
         request: &ChargeRequest,
     ) -> Result<Receipt, VerificationError> {
-        // 1. Verify HMAC.
+        // Tier 1: Verify HMAC.
         let expected_id = compute_challenge_id(
             &self.secret_key,
             &self.realm,
@@ -435,7 +493,7 @@ impl Mpp {
             ));
         }
 
-        // 2. Check expiry.
+        // Check expiry.
         if let Some(ref expires) = credential.challenge.expires {
             if let Ok(expires_at) =
                 time::OffsetDateTime::parse(expires, &time::format_description::well_known::Rfc3339)
@@ -452,7 +510,12 @@ impl Mpp {
             }
         }
 
-        // 3. Deserialize the credential payload.
+        // Tier 2: Pinned-field backstop. Runs unconditionally so even simple
+        // `verify_credential` callers are protected against cross-route replay
+        // for the fields that are pinned at `Mpp` construction time.
+        self.verify_pinned_fields(credential, request)?;
+
+        // Deserialize the credential payload.
         let payload: CredentialPayload = serde_json::from_value(credential.payload.clone())
             .map_err(|e| {
                 VerificationError::invalid_payload(format!("Invalid credential payload: {e}"))
@@ -468,7 +531,7 @@ impl Mpp {
             })?
             .unwrap_or_default();
 
-        // 4. Settle — pull or push mode.
+        // Settle — pull or push mode.
         let signature_str = match payload {
             CredentialPayload::Transaction { ref transaction } => {
                 self.verify_pull(transaction, request, &method_details)
@@ -479,7 +542,7 @@ impl Mpp {
             }
         };
 
-        // 5. Replay protection (atomic check-and-consume).
+        // Replay protection (atomic check-and-consume).
         let consumed_key = format!("solana-charge:consumed:{signature_str}");
         let inserted = self
             .store
@@ -3857,6 +3920,161 @@ mod tests {
             .unwrap_err();
         assert_eq!(err.code, Some("malformed-credential"));
         assert!(err.message.contains("Recipient mismatch"));
+    }
+
+    /// Behavioral proof that `verify_credential_with_expected` routes the
+    /// route's `expected` request into `verify` (not the credential-decoded
+    /// one). The credential carries valid method_details, but `expected`
+    /// carries malformed ones — if the SDK is using `expected` as the
+    /// source of truth during settlement, parsing fails on `expected`'s
+    /// method_details. If it were still using the credential's request
+    /// (the pre-fix behavior), this test would not produce that error.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn verify_credential_with_expected_routes_expected_into_verify() {
+        let mpp = test_mpp();
+        let challenge = mpp.charge("0.10").unwrap();
+        let cred = PaymentCredential {
+            challenge: challenge.to_echo(),
+            source: None,
+            payload: serde_json::json!({"type": "signature", "signature": "x"}),
+        };
+
+        let mut expected: ChargeRequest = challenge.request.decode().unwrap();
+        // `network` is Option<String>; a number won't deserialize into MethodDetails.
+        expected.method_details = Some(serde_json::json!({"network": 12345}));
+
+        let err = mpp
+            .verify_credential_with_expected(&cred, &expected)
+            .await
+            .unwrap_err();
+        assert!(
+            err.message.contains("Invalid method details"),
+            "expected `expected` request to be parsed, got: {err:?}"
+        );
+    }
+
+    // ── Tier-2 pinned-field tests ──
+    //
+    // Each test forges a credential where one pinned field differs from what
+    // the server has configured, then re-signs the HMAC so Tier-1 passes. The
+    // Tier-2 backstop must reject every case even via the simple
+    // `verify_credential` API.
+
+    fn resign_challenge(
+        secret: &str,
+        realm: &str,
+        echo: &mut crate::protocol::core::ChallengeEcho,
+    ) {
+        echo.id = compute_challenge_id(
+            secret,
+            realm,
+            echo.method.as_str(),
+            echo.intent.as_str(),
+            echo.request.raw(),
+            echo.expires.as_deref(),
+            echo.digest.as_deref(),
+            echo.opaque.as_ref().map(|o| o.raw()),
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn tier2_rejects_tampered_realm() {
+        let mpp = test_mpp();
+        let challenge = mpp.charge("0.10").unwrap();
+        let mut echo = challenge.to_echo();
+        echo.realm = "Attacker Realm".to_string();
+        // HMAC uses the *server's* realm, not the echoed one, so re-signing
+        // with the server's realm produces an ID that Tier-1 accepts.
+        resign_challenge(TEST_SECRET, &mpp.realm, &mut echo);
+
+        let cred = PaymentCredential {
+            challenge: echo,
+            source: None,
+            payload: serde_json::json!({"type": "signature", "signature": "x"}),
+        };
+        let err = mpp.verify_credential(&cred).await.unwrap_err();
+        assert_eq!(err.code, Some("malformed-credential"));
+        assert!(err.message.to_lowercase().contains("realm"), "got: {err:?}");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn tier2_rejects_tampered_currency() {
+        let mpp = test_mpp();
+        let challenge = mpp.charge("0.10").unwrap();
+        let mut request: ChargeRequest = challenge.request.decode().unwrap();
+        request.currency = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v".to_string();
+        let encoded = Base64UrlJson::from_typed(&request).unwrap();
+
+        let mut echo = challenge.to_echo();
+        echo.request = encoded;
+        resign_challenge(TEST_SECRET, &mpp.realm, &mut echo);
+
+        let cred = PaymentCredential {
+            challenge: echo,
+            source: None,
+            payload: serde_json::json!({"type": "signature", "signature": "x"}),
+        };
+        let err = mpp.verify_credential(&cred).await.unwrap_err();
+        assert_eq!(err.code, Some("malformed-credential"));
+        assert!(err.message.contains("currency"), "got: {err:?}");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn tier2_rejects_tampered_recipient() {
+        let mpp = test_mpp();
+        let challenge = mpp.charge("0.10").unwrap();
+        let mut request: ChargeRequest = challenge.request.decode().unwrap();
+        request.recipient = Some(Pubkey::new_unique().to_string());
+        let encoded = Base64UrlJson::from_typed(&request).unwrap();
+
+        let mut echo = challenge.to_echo();
+        echo.request = encoded;
+        resign_challenge(TEST_SECRET, &mpp.realm, &mut echo);
+
+        let cred = PaymentCredential {
+            challenge: echo,
+            source: None,
+            payload: serde_json::json!({"type": "signature", "signature": "x"}),
+        };
+        let err = mpp.verify_credential(&cred).await.unwrap_err();
+        assert_eq!(err.code, Some("malformed-credential"));
+        assert!(err.message.contains("recipient"), "got: {err:?}");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn tier2_rejects_tampered_method() {
+        let mpp = test_mpp();
+        let challenge = mpp.charge("0.10").unwrap();
+        let mut echo = challenge.to_echo();
+        echo.method = "stripe".into();
+        resign_challenge(TEST_SECRET, &mpp.realm, &mut echo);
+
+        let cred = PaymentCredential {
+            challenge: echo,
+            source: None,
+            payload: serde_json::json!({"type": "signature", "signature": "x"}),
+        };
+        let err = mpp.verify_credential(&cred).await.unwrap_err();
+        assert_eq!(err.code, Some("malformed-credential"));
+        assert!(err.message.contains("method"), "got: {err:?}");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn tier2_rejects_non_charge_intent() {
+        let mpp = test_mpp();
+        let challenge = mpp.charge("0.10").unwrap();
+        let mut echo = challenge.to_echo();
+        echo.intent = "session".into();
+        resign_challenge(TEST_SECRET, &mpp.realm, &mut echo);
+
+        let cred = PaymentCredential {
+            challenge: echo,
+            source: None,
+            payload: serde_json::json!({"type": "signature", "signature": "x"}),
+        };
+        let err = mpp.verify_credential(&cred).await.unwrap_err();
+        assert_eq!(err.code, Some("malformed-credential"));
+        assert!(err.message.contains("intent"), "got: {err:?}");
     }
 
     // ── Replay protection tests ──
