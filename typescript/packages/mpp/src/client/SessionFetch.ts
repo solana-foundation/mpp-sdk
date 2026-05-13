@@ -1,18 +1,21 @@
 import { generateKeyPairSigner, getBase58Decoder } from '@solana/kit';
 
 import {
+    selectSolanaSessionChallengeFromResponse,
+    type SelectSolanaSessionChallengeOptions,
+} from './ChallengeSelection.js';
+import {
     ActiveSession,
-    DEFAULT_SESSION_EXPIRES_AT,
-    serializeSessionCredential,
     type AmountLike,
     type CommitReceipt,
+    DEFAULT_SESSION_EXPIRES_AT,
     type MeteringDirective,
     type OpenPayload,
+    serializeSessionCredential,
     type SessionChallenge,
     type SessionMode,
     type SignedVoucher,
 } from './Session.js';
-import { selectSolanaSessionChallengeFromResponse, type SelectSolanaSessionChallengeOptions } from './ChallengeSelection.js';
 
 type FetchInput = Parameters<typeof globalThis.fetch>[0];
 type FetchInit = Parameters<typeof globalThis.fetch>[1];
@@ -91,16 +94,16 @@ export interface CommitSessionDeliveryParameters {
  * Events emitted by `SessionFetchClient`.
  */
 export type SessionFetchEvent =
-    | { readonly challenge: SessionChallenge; readonly type: 'challenge' }
-    | { readonly open: SessionFetchOpenState; readonly type: 'open' }
-    | { readonly response: Response; readonly type: 'retry' }
     | {
           readonly cumulativeAmount: string;
           readonly deltaAmount: string;
           readonly sessionId: string;
           readonly type: 'watermark';
       }
-    | { readonly receipt: CommitReceipt; readonly type: 'commit' };
+    | { readonly challenge: SessionChallenge; readonly type: 'challenge' }
+    | { readonly open: SessionFetchOpenState; readonly type: 'open' }
+    | { readonly receipt: CommitReceipt; readonly type: 'commit' }
+    | { readonly response: Response; readonly type: 'retry' };
 
 /**
  * High-level HTTP helper for Solana payment sessions.
@@ -115,9 +118,9 @@ export class SessionFetchClient {
     readonly #onEvent: ((event: SessionFetchEvent) => void) | undefined;
     readonly #opener: SessionOpener;
     readonly #prepareRequest: PrepareSessionRequest | undefined;
-    readonly #selectChallengeOptions: SelectSolanaSessionChallengeOptions;
+    readonly #selectChallengeOptions: SelectSolanaSessionChallengeOptions | undefined;
 
-    #commitFailure: unknown;
+    #commitFailure: Error | undefined;
     #commitQueue: Promise<CommitReceipt | null> = Promise.resolve(null);
     #lastCommitQueuedAt = 0;
     #lastQueuedCumulative = 0n;
@@ -166,7 +169,7 @@ export class SessionFetchClient {
      */
     async fetchWithSession(input: FetchInput, init?: FetchInit): Promise<Response> {
         this.throwCommitFailure();
-        const prepared = this.prepare({ input: cloneFetchInput(input), init });
+        const prepared = this.prepare({ init, input: cloneFetchInput(input) });
         const response = await this.#fetch(prepared.input, prepared.init);
         if (response.status !== 402) {
             return response;
@@ -199,8 +202,8 @@ export class SessionFetchClient {
         this.emit({ open, type: 'open' });
 
         const retry = this.prepare({
-            input: cloneFetchInput(input),
             init: withAuthorization(init, authorization),
+            input: cloneFetchInput(input),
         });
         const retryResponse = await this.#fetch(retry.input, retry.init);
         this.emit({ response: retryResponse, type: 'retry' });
@@ -275,7 +278,7 @@ export class SessionFetchClient {
         this.#commitQueue = this.#commitQueue
             .then(async () => await this.commitTarget(target))
             .catch(error => {
-                this.#commitFailure = error;
+                this.#commitFailure = toError(error);
                 return null;
             });
     }
@@ -408,9 +411,7 @@ export function createSessionFetch(parameters: SessionFetchClient.Parameters): S
  * This is useful for local gateways and demos. Production clients should pass an
  * opener that performs the real wallet approval or channel open transaction.
  */
-export function createEphemeralSessionOpener(
-    options: createEphemeralSessionOpener.Options = {},
-): SessionOpener {
+export function createEphemeralSessionOpener(options: createEphemeralSessionOpener.Options = {}): SessionOpener {
     return async ({ challenge }) => {
         const signer = await generateKeyPairSigner();
         const channel = await generateKeyPairSigner();
@@ -514,6 +515,10 @@ function withAuthorization(init: FetchInit, authorization: string): FetchInit {
     const headers = new Headers(init?.headers);
     headers.set('authorization', authorization);
     return { ...init, headers };
+}
+
+function toError(value: unknown): Error {
+    return value instanceof Error ? value : new Error(String(value));
 }
 
 function cloneFetchInput(input: FetchInput): FetchInput {

@@ -428,7 +428,11 @@ export class ActiveSession {
     /**
      * Builds a push-mode `open` action after the open transaction is confirmed.
      */
-    openAction(deposit: AmountLike, signature: string, options: ActiveSession.OpenOptions = {}): SessionAction {
+    openAction(
+        deposit: AmountLike,
+        signature: string,
+        options: ActiveSession.OpenOptions = {},
+    ): OpenPayload & { readonly action: 'open' } {
         return {
             action: 'open',
             authorizedSigner: this.authorizedSigner,
@@ -443,7 +447,9 @@ export class ActiveSession {
     /**
      * Builds a detailed payment-channel push-mode `open` action.
      */
-    openPaymentChannelAction(parameters: ActiveSession.PaymentChannelOpenParameters): SessionAction {
+    openPaymentChannelAction(
+        parameters: ActiveSession.PaymentChannelOpenParameters,
+    ): OpenPayload & { readonly action: 'open' } {
         return {
             action: 'open',
             authorizedSigner: this.authorizedSigner,
@@ -463,7 +469,7 @@ export class ActiveSession {
     /**
      * Builds a pull-mode `open` action after delegation is confirmed.
      */
-    openPullAction(parameters: ActiveSession.PullOpenParameters): SessionAction {
+    openPullAction(parameters: ActiveSession.PullOpenParameters): OpenPayload & { readonly action: 'open' } {
         return {
             action: 'open',
             approvedAmount: formatAmount(parameters.approvedAmount, 'approvedAmount'),
