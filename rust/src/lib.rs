@@ -62,8 +62,10 @@ pub use protocol::core::{
 
 // Intent types
 pub use protocol::intents::{
-    parse_units, ChargeRequest, ClosePayload, OpenPayload, SessionAction, SessionMode,
+    parse_units, ChargeRequest, ClosePayload, CommitPayload, CommitReceipt, CommitStatus,
+    MeteredEnvelope, MeteringDirective, MeteringUsage, OpenPayload, SessionAction, SessionMode,
     SessionRequest, SessionSplit, SignedVoucher, TopUpPayload, VoucherData, VoucherPayload,
+    DEFAULT_SESSION_EXPIRES_AT,
 };
 
 pub use protocol::solana::{
@@ -71,7 +73,10 @@ pub use protocol::solana::{
 };
 
 // Store types
-pub use store::{ChannelState, ChannelStore, MemoryChannelStore, MemoryStore, Store, StoreError};
+pub use store::{
+    ChannelState, ChannelStore, CommittedDelivery, MemoryChannelStore, MemoryStore,
+    PendingDelivery, Store, StoreError,
+};
 
 // Re-export crates callers need to use with the charge builder.
 pub use solana_keychain;

@@ -2,13 +2,21 @@ import type { z } from 'mppx';
 import { Challenge } from 'mppx';
 
 import { resolveStablecoinMint } from '../constants.js';
-import { charge as chargeMethod } from '../Methods.js';
+import { charge as chargeMethod, session as sessionMethod } from '../Methods.js';
+import type { SessionMode } from './Session.js';
 
 /** A typed Solana charge challenge accepted by the MPP client. */
 export type SolanaChargeChallenge = Challenge.Challenge<
     z.output<typeof chargeMethod.schema.request>,
     typeof chargeMethod.intent,
     typeof chargeMethod.name
+>;
+
+/** A typed Solana session challenge accepted by the MPP client. */
+export type SolanaSessionChallenge = Challenge.Challenge<
+    z.output<typeof sessionMethod.schema.request>,
+    typeof sessionMethod.intent,
+    typeof sessionMethod.name
 >;
 
 /** Options for selecting one Solana charge challenge from a challenge set. */
@@ -19,6 +27,12 @@ export type SelectSolanaChargeChallengeOptions = {
     network?: string | undefined;
 };
 
+/** Options for selecting one Solana session challenge from a challenge set. */
+export type SelectSolanaSessionChallengeOptions = SelectSolanaChargeChallengeOptions & {
+    /** Preferred funding mode. */
+    mode?: SessionMode | readonly SessionMode[] | undefined;
+};
+
 /**
  * Returns true when a challenge is a schema-valid Solana charge challenge.
  */
@@ -27,6 +41,16 @@ export function isSolanaChargeChallenge(challenge: Challenge.Challenge): challen
         return false;
     }
     return chargeMethod.schema.request.safeParse(challenge.request).success;
+}
+
+/**
+ * Returns true when a challenge is a schema-valid Solana session challenge.
+ */
+export function isSolanaSessionChallenge(challenge: Challenge.Challenge): challenge is SolanaSessionChallenge {
+    if (challenge.method !== sessionMethod.name || challenge.intent !== sessionMethod.intent) {
+        return false;
+    }
+    return sessionMethod.schema.request.safeParse(challenge.request).success;
 }
 
 /**
@@ -78,6 +102,51 @@ export function selectSolanaChargeChallenge(
 }
 
 /**
+ * Selects the Solana session challenge the client should open.
+ */
+export function selectSolanaSessionChallenge(
+    challenges: readonly Challenge.Challenge[],
+    options: SelectSolanaSessionChallengeOptions = {},
+): SolanaSessionChallenge | undefined {
+    const candidates: SolanaSessionChallenge[] = [];
+
+    for (const challenge of challenges) {
+        if (challenge.method !== sessionMethod.name || challenge.intent !== sessionMethod.intent) {
+            continue;
+        }
+
+        const result = sessionMethod.schema.request.safeParse(challenge.request);
+        if (!result.success) {
+            throw new Error('Invalid Solana session challenge request');
+        }
+
+        const typedChallenge = {
+            ...challenge,
+            request: result.data,
+        } as SolanaSessionChallenge;
+
+        if (!matchesSessionNetwork(typedChallenge, options.network)) {
+            continue;
+        }
+        if (!matchesSessionCurrency(typedChallenge, options.currency)) {
+            continue;
+        }
+
+        candidates.push(typedChallenge);
+    }
+
+    if (!options.mode) {
+        return candidates[0];
+    }
+
+    const acceptedModes = typeof options.mode === 'string' ? [options.mode] : options.mode;
+    return candidates.find(challenge => {
+        const challengeModes = challenge.request.modes ?? ['push'];
+        return acceptedModes.some(mode => challengeModes.includes(mode));
+    });
+}
+
+/**
  * Extracts all HTTP `WWW-Authenticate` challenges from a response and selects
  * the Solana charge challenge the client should sign.
  */
@@ -86,6 +155,17 @@ export function selectSolanaChargeChallengeFromResponse(
     options: SelectSolanaChargeChallengeOptions = {},
 ): SolanaChargeChallenge | undefined {
     return selectSolanaChargeChallenge(Challenge.fromResponseList(response), options);
+}
+
+/**
+ * Extracts all HTTP `WWW-Authenticate` challenges from a response and selects
+ * the Solana session challenge the client should open.
+ */
+export function selectSolanaSessionChallengeFromResponse(
+    response: Response,
+    options: SelectSolanaSessionChallengeOptions = {},
+): SolanaSessionChallenge | undefined {
+    return selectSolanaSessionChallenge(Challenge.fromResponseList(response), options);
 }
 
 function matchesNetwork(challenge: SolanaChargeChallenge, network: string | undefined): boolean {
@@ -118,4 +198,25 @@ function currenciesMatch(challengeCurrency: string, acceptedCurrency: string, ne
     const challengeMint = resolveStablecoinMint(challengeCurrency, network);
     const acceptedMint = resolveStablecoinMint(acceptedCurrency, network);
     return challengeMint === acceptedMint;
+}
+
+function matchesSessionNetwork(challenge: SolanaSessionChallenge, network: string | undefined): boolean {
+    if (!network) {
+        return true;
+    }
+    return (challenge.request.network ?? 'mainnet-beta') === network;
+}
+
+function matchesSessionCurrency(
+    challenge: SolanaSessionChallenge,
+    currency: string | readonly string[] | undefined,
+): boolean {
+    if (!currency) {
+        return true;
+    }
+
+    const acceptedCurrencies = normalizeCurrencyPreference(currency);
+    return acceptedCurrencies.some(acceptedCurrency =>
+        currenciesMatch(challenge.request.currency, acceptedCurrency, challenge.request.network),
+    );
 }

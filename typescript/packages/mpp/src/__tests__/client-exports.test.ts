@@ -5,10 +5,15 @@
  */
 import { solana } from '../client/Methods.js';
 import {
+    ActiveSession,
     charge,
+    HttpCommitTransport,
+    SessionConsumer,
     selectSolanaChargeChallenge,
     selectSolanaChargeChallengeFromResponse,
+    session,
     solana as solanaFromIndex,
+    voucherMessageBytes,
 } from '../client/index.js';
 
 describe('client/Methods.ts', () => {
@@ -19,6 +24,10 @@ describe('client/Methods.ts', () => {
     test('solana.charge is a function', () => {
         expect(typeof solana.charge).toBe('function');
     });
+
+    test('solana.session is a function', () => {
+        expect(typeof solana.session).toBe('function');
+    });
 });
 
 describe('client/index.ts', () => {
@@ -26,9 +35,18 @@ describe('client/index.ts', () => {
         expect(typeof charge).toBe('function');
     });
 
+    test('exports session devex helpers', () => {
+        expect(typeof session).toBe('function');
+        expect(typeof ActiveSession).toBe('function');
+        expect(typeof SessionConsumer).toBe('function');
+        expect(typeof HttpCommitTransport).toBe('function');
+        expect(typeof voucherMessageBytes).toBe('function');
+    });
+
     test('exports solana namespace', () => {
         expect(typeof solanaFromIndex).toBe('function');
         expect(solanaFromIndex).toBe(solana);
+        expect(solanaFromIndex.session).toBe(solana.session);
     });
 
     test('exports challenge selectors', () => {

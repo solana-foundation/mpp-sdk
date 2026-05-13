@@ -33,7 +33,7 @@ solana-transaction-status = { version = "3.1", default-features = false }
 tokio = { version = "1", features = ["full"], optional = true }
 
 # HTTP client
-reqwest = { version = "0.12", features = ["json"], optional = true }
+reqwest = { version = "0.12", features = ["json", "stream"], optional = true }
 
 # Axum extractor (opt-in)
 axum = { version = "0.8", optional = true, default-features = false }
@@ -45,6 +45,9 @@ serde_json_canonicalizer = "0.3"
 bs58 = "0.5"
 base64 = "0.22"
 bincode = "1"
+borsh = { version = "1.0", features = ["derive"] }
+payment_channels_client = { path = "payment_channels_client" }
+solana-address = { version = "2", features = ["borsh", "curve25519"] }
 
 # Crypto (HMAC challenge IDs + distribution hash + voucher verification)
 hmac = "0.12"

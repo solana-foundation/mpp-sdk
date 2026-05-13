@@ -1,7 +1,8 @@
 //! Client-side session intent implementation.
 //!
 //! Tracks an open payment channel and signs cumulative vouchers for each
-//! API call. Vouchers are Ed25519-signed over JCS-canonical JSON.
+//! API call. Vouchers are Ed25519-signed over the on-chain Borsh voucher
+//! layout used by the payment-channels program.
 //!
 //! # Example
 //!
@@ -23,12 +24,17 @@ use solana_keychain::SolanaSigner;
 use solana_pubkey::Pubkey;
 
 use crate::error::{Error, Result};
-use crate::protocol::core::base64url_encode;
 use crate::protocol::intents::session::{
     ClosePayload, OpenPayload, SessionAction, SignedVoucher, TopUpPayload, VoucherData,
-    VoucherPayload,
+    VoucherPayload, DEFAULT_SESSION_EXPIRES_AT,
 };
 // SessionMode is used indirectly via OpenPayload constructors.
+
+/// Default voucher expiry: 2100-01-01T00:00:00Z.
+///
+/// This stays below JavaScript's max safe integer so JSON intermediaries do not
+/// round it before the credential is decoded.
+pub const DEFAULT_VOUCHER_EXPIRES_AT: i64 = DEFAULT_SESSION_EXPIRES_AT;
 
 /// Tracks the client-side state of an active payment session.
 ///
@@ -45,6 +51,9 @@ pub struct ActiveSession {
     /// Nonce counter, incremented with each signed voucher.
     nonce: u64,
 
+    /// Unix timestamp at which newly signed vouchers expire.
+    expires_at: i64,
+
     /// Session signing key.
     signer: Box<dyn SolanaSigner>,
 }
@@ -60,8 +69,29 @@ impl ActiveSession {
             channel_id,
             cumulative: 0,
             nonce: 0,
+            expires_at: DEFAULT_VOUCHER_EXPIRES_AT,
             signer,
         }
+    }
+
+    /// Create a new session tracker with an explicit voucher expiry.
+    pub fn new_with_expiry(
+        channel_id: Pubkey,
+        signer: Box<dyn SolanaSigner>,
+        expires_at: i64,
+    ) -> Self {
+        Self {
+            channel_id,
+            cumulative: 0,
+            nonce: 0,
+            expires_at,
+            signer,
+        }
+    }
+
+    /// Update the expiry timestamp used for subsequent vouchers.
+    pub fn set_expires_at(&mut self, expires_at: i64) {
+        self.expires_at = expires_at;
     }
 
     /// The authorized signer public key (base58), for the `open` action payload.
@@ -78,6 +108,17 @@ impl ActiveSession {
     ///
     /// `cumulative` MUST be strictly greater than the current watermark.
     pub async fn sign_voucher(&mut self, cumulative: u64) -> Result<SignedVoucher> {
+        let voucher = self.prepare_voucher(cumulative).await?;
+        self.record_voucher(&voucher)?;
+        Ok(voucher)
+    }
+
+    /// Prepare a signed voucher without advancing the local watermark.
+    ///
+    /// This is useful for ack/commit transports: if sending the commit fails,
+    /// the client can retry the same cumulative amount without its local state
+    /// drifting ahead of the server.
+    pub async fn prepare_voucher(&self, cumulative: u64) -> Result<SignedVoucher> {
         if cumulative <= self.cumulative {
             return Err(Error::Other(format!(
                 "Voucher cumulative {cumulative} must exceed current watermark {}",
@@ -85,27 +126,48 @@ impl ActiveSession {
             )));
         }
 
-        self.nonce += 1;
         let data = VoucherData {
             channel_id: self.channel_id_str(),
             cumulative: cumulative.to_string(),
-            nonce: Some(self.nonce),
+            expires_at: self.expires_at,
+            nonce: Some(self.nonce + 1),
         };
 
-        let bytes = data.canonical_bytes()?;
+        let bytes = data.message_bytes()?;
         let sig = self
             .signer
             .sign_message(&bytes)
             .await
             .map_err(|e| Error::Other(format!("Signing failed: {e}")))?;
-        let sig_b64 = base64url_encode(sig.as_ref());
-
-        self.cumulative = cumulative;
+        let sig_b58 = bs58::encode(sig.as_ref()).into_string();
 
         Ok(SignedVoucher {
             data,
-            signature: sig_b64,
+            signature: sig_b58,
         })
+    }
+
+    /// Prepare a signed voucher adding `amount` without advancing the watermark.
+    pub async fn prepare_increment(&self, amount: u64) -> Result<SignedVoucher> {
+        self.prepare_voucher(self.cumulative + amount).await
+    }
+
+    /// Record a prepared voucher as accepted by the server.
+    pub fn record_voucher(&mut self, voucher: &SignedVoucher) -> Result<()> {
+        let cumulative = voucher
+            .data
+            .cumulative
+            .parse::<u64>()
+            .map_err(|_| Error::Other("invalid voucher cumulative".to_string()))?;
+        if cumulative <= self.cumulative {
+            return Err(Error::Other(format!(
+                "Voucher cumulative {cumulative} must exceed current watermark {}",
+                self.cumulative
+            )));
+        }
+        self.cumulative = cumulative;
+        self.nonce = self.nonce.max(voucher.data.nonce.unwrap_or(self.nonce + 1));
+        Ok(())
     }
 
     /// Sign a voucher adding `amount` to the current cumulative.
@@ -134,7 +196,7 @@ impl ActiveSession {
         }))
     }
 
-    /// Build a `SessionAction::Open` for **push** mode (Fiber channel).
+    /// Build a `SessionAction::Open` for **push** mode.
     ///
     /// Call this after the on-chain open transaction has been confirmed.
     /// `channel_id` in the session MUST match the confirmed channel address.
@@ -142,6 +204,31 @@ impl ActiveSession {
         SessionAction::Open(OpenPayload::push(
             self.channel_id_str(),
             deposit.to_string(),
+            self.authorized_signer(),
+            open_tx_signature.to_string(),
+        ))
+    }
+
+    /// Build a `SessionAction::Open` for the payment-channels program.
+    #[allow(clippy::too_many_arguments)]
+    pub fn open_payment_channel_action(
+        &self,
+        deposit: u64,
+        payer: &str,
+        payee: &str,
+        mint: &str,
+        salt: u64,
+        grace_period: u32,
+        open_tx_signature: &str,
+    ) -> SessionAction {
+        SessionAction::Open(OpenPayload::payment_channel(
+            self.channel_id_str(),
+            deposit.to_string(),
+            payer.to_string(),
+            payee.to_string(),
+            mint.to_string(),
+            salt,
+            grace_period,
             self.authorized_signer(),
             open_tx_signature.to_string(),
         ))
@@ -203,6 +290,19 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn new_with_expiry_and_set_expires_at_control_voucher_expiry() {
+        let channel_id = Pubkey::new_unique();
+        let mut session = ActiveSession::new_with_expiry(channel_id, make_signer(), 1234);
+        let first = session.prepare_increment(10).await.unwrap();
+        assert_eq!(first.data.expires_at, 1234);
+        assert_eq!(session.cumulative, 0);
+
+        session.set_expires_at(5678);
+        let second = session.prepare_increment(10).await.unwrap();
+        assert_eq!(second.data.expires_at, 5678);
+    }
+
+    #[tokio::test]
     async fn sign_increment_increases_cumulative() {
         let mut s = make_session();
         assert_eq!(s.cumulative, 0);
@@ -221,6 +321,47 @@ mod tests {
         let v = s.sign_voucher(200).await.unwrap();
         assert_eq!(s.cumulative, 200);
         assert_eq!(v.data.cumulative, "200");
+    }
+
+    #[tokio::test]
+    async fn prepare_and_record_voucher_are_separate_steps() {
+        let mut s = make_session();
+        let prepared = s.prepare_increment(75).await.unwrap();
+        assert_eq!(prepared.data.cumulative, "75");
+        assert_eq!(prepared.data.nonce, Some(1));
+        assert_eq!(s.cumulative, 0);
+
+        s.record_voucher(&prepared).unwrap();
+        assert_eq!(s.cumulative, 75);
+        assert!(s.record_voucher(&prepared).is_err());
+    }
+
+    #[test]
+    fn record_voucher_rejects_invalid_cumulative_and_handles_missing_nonce() {
+        let mut s = make_session();
+        let bad = SignedVoucher {
+            data: VoucherData {
+                channel_id: s.channel_id_str(),
+                cumulative: "not-a-number".to_string(),
+                expires_at: DEFAULT_VOUCHER_EXPIRES_AT,
+                nonce: None,
+            },
+            signature: "sig".to_string(),
+        };
+        assert!(s.record_voucher(&bad).is_err());
+
+        let without_nonce = SignedVoucher {
+            data: VoucherData {
+                channel_id: s.channel_id_str(),
+                cumulative: "15".to_string(),
+                expires_at: DEFAULT_VOUCHER_EXPIRES_AT,
+                nonce: None,
+            },
+            signature: "sig".to_string(),
+        };
+        s.record_voucher(&without_nonce).unwrap();
+        assert_eq!(s.cumulative, 15);
+        assert_eq!(s.nonce, 1);
     }
 
     #[tokio::test]
@@ -255,6 +396,19 @@ mod tests {
         assert_eq!(v.data.channel_id, expected);
     }
 
+    #[tokio::test]
+    async fn voucher_action_fields() {
+        let mut s = make_session();
+        let action = s.voucher_action(33).await.unwrap();
+        match action {
+            SessionAction::Voucher(p) => {
+                assert_eq!(p.voucher.data.cumulative, "33");
+                assert_eq!(p.voucher.data.channel_id, s.channel_id_str());
+            }
+            _ => panic!("Expected Voucher"),
+        }
+    }
+
     #[test]
     fn open_action_fields() {
         use crate::protocol::intents::session::SessionMode;
@@ -269,6 +423,29 @@ mod tests {
                 assert_eq!(p.signature, "txsig123");
                 assert_eq!(p.channel_id.as_deref(), Some(channel_id.as_str()));
                 assert_eq!(p.authorized_signer, authorized_signer);
+            }
+            _ => panic!("Expected Open"),
+        }
+    }
+
+    #[test]
+    fn open_payment_channel_action_fields() {
+        use crate::protocol::intents::session::SessionMode;
+        let s = make_session();
+        let channel_id = s.channel_id_str();
+        let action =
+            s.open_payment_channel_action(9_000, "payer", "payee", "mint", 42, 60, "open-sig");
+        match action {
+            SessionAction::Open(p) => {
+                assert_eq!(p.mode, SessionMode::Push);
+                assert_eq!(p.channel_id.as_deref(), Some(channel_id.as_str()));
+                assert_eq!(p.deposit.as_deref(), Some("9000"));
+                assert_eq!(p.payer.as_deref(), Some("payer"));
+                assert_eq!(p.payee.as_deref(), Some("payee"));
+                assert_eq!(p.mint.as_deref(), Some("mint"));
+                assert_eq!(p.salt, Some(42));
+                assert_eq!(p.grace_period, Some(60));
+                assert_eq!(p.signature, "open-sig");
             }
             _ => panic!("Expected Open"),
         }
