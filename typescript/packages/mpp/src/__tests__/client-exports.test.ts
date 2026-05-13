@@ -7,8 +7,10 @@ import { solana } from '../client/Methods.js';
 import {
     ActiveSession,
     charge,
+    createSessionUsageMeter,
     HttpCommitTransport,
     SessionConsumer,
+    SessionUsageMeter,
     selectSolanaChargeChallenge,
     selectSolanaChargeChallengeFromResponse,
     session,
@@ -39,6 +41,8 @@ describe('client/index.ts', () => {
         expect(typeof session).toBe('function');
         expect(typeof ActiveSession).toBe('function');
         expect(typeof SessionConsumer).toBe('function');
+        expect(typeof SessionUsageMeter).toBe('function');
+        expect(typeof createSessionUsageMeter).toBe('function');
         expect(typeof HttpCommitTransport).toBe('function');
         expect(typeof voucherMessageBytes).toBe('function');
     });

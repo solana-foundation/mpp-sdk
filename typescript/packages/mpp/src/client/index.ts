@@ -70,5 +70,7 @@ export type {
     SessionOpenResult,
     SessionOpener,
 } from './SessionFetch.js';
+export { createSessionUsageMeter, SessionUsageMeter } from './SessionUsageMeter.js';
+export type { SessionUsagePrice, SessionUsagePricer, SessionUsagePricingContext } from './SessionUsageMeter.js';
 // Re-export Mppx so consumers can do: import { Mppx, solana } from 'solana-mpp-sdk/client'
 export { Mppx } from 'mppx/client';
