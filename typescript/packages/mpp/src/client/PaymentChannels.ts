@@ -13,16 +13,16 @@ import {
     getBase64EncodedWireTransaction,
     getProgramDerivedAddress,
     getStructEncoder,
+    getU8Encoder,
     getU16Encoder,
     getU32Encoder,
     getU64Encoder,
-    getU8Encoder,
     getUtf8Encoder,
     type Instruction,
     type InstructionWithSigners,
-    type ReadonlyUint8Array,
     partiallySignTransactionMessageWithSigners,
     pipe,
+    type ReadonlyUint8Array,
     setTransactionMessageFeePayer,
     setTransactionMessageLifetimeUsingBlockhash,
     type TransactionSigner,
@@ -396,7 +396,7 @@ interface OpenPaymentChannelInstructionParameters {
     readonly tokenProgram: Address;
 }
 
-type OpenPaymentChannelInstruction = Omit<Instruction, 'accounts'> & InstructionWithSigners;
+type OpenPaymentChannelInstruction = InstructionWithSigners & Omit<Instruction, 'accounts'>;
 
 async function preparePaymentChannelOpen(
     parameters: derivePaymentChannelOpen.Parameters,

@@ -500,6 +500,113 @@ mod tests {
         );
     }
 
+    #[test]
+    fn derive_payment_channel_open_honors_explicit_options() {
+        let operator = Pubkey::new_unique();
+        let recipient = Pubkey::new_unique();
+        let split_recipient = Pubkey::new_unique();
+        let program_id = Pubkey::new_unique();
+        let token_program = Pubkey::from_str(programs::TOKEN_2022_PROGRAM).unwrap();
+        let mut request = test_request(operator, recipient);
+        request.cap = "not-a-number".to_string();
+        request.splits.push(SessionSplit {
+            recipient: "not-a-pubkey".to_string(),
+            bps: 999,
+        });
+
+        let open = derive_payment_channel_open(DerivePaymentChannelOpenParams {
+            request: &request,
+            payer: Pubkey::new_unique(),
+            authorized_signer: Pubkey::new_unique(),
+            options: PaymentChannelOpenOptions {
+                deposit: Some(55),
+                grace_period: Some(12),
+                program_id: Some(program_id),
+                recipients: Some(vec![Distribution {
+                    recipient: split_recipient,
+                    bps: 25,
+                }]),
+                salt: Some(7),
+                token_program: Some(token_program),
+            },
+        })
+        .unwrap();
+
+        assert_eq!(open.deposit, 55);
+        assert_eq!(open.grace_period, 12);
+        assert_eq!(open.program_id, program_id);
+        assert_eq!(open.token_program, token_program);
+        assert_eq!(open.recipients.len(), 1);
+        assert_eq!(open.recipients[0].recipient, split_recipient);
+        assert_eq!(open.recipients[0].bps, 25);
+    }
+
+    #[test]
+    fn derive_payment_channel_open_rejects_invalid_challenge_values() {
+        let operator = Pubkey::new_unique();
+        let recipient = Pubkey::new_unique();
+        let payer = Pubkey::new_unique();
+        let authorized_signer = Pubkey::new_unique();
+
+        let mut request = test_request(operator, recipient);
+        request.currency = "SOL".to_string();
+        let err = derive_payment_channel_open(DerivePaymentChannelOpenParams {
+            request: &request,
+            payer,
+            authorized_signer,
+            options: PaymentChannelOpenOptions::default(),
+        })
+        .unwrap_err();
+        assert!(err.to_string().contains("SPL token"));
+
+        let mut request = test_request(operator, recipient);
+        request.cap = "not-a-number".to_string();
+        let err = derive_payment_channel_open(DerivePaymentChannelOpenParams {
+            request: &request,
+            payer,
+            authorized_signer,
+            options: PaymentChannelOpenOptions::default(),
+        })
+        .unwrap_err();
+        assert!(err.to_string().contains("session cap"));
+
+        let mut request = test_request(operator, recipient);
+        request.recipient = "not-a-pubkey".to_string();
+        let err = derive_payment_channel_open(DerivePaymentChannelOpenParams {
+            request: &request,
+            payer,
+            authorized_signer,
+            options: PaymentChannelOpenOptions::default(),
+        })
+        .unwrap_err();
+        assert!(err.to_string().contains("recipient"));
+
+        let mut request = test_request(operator, recipient);
+        request.program_id = Some("not-a-program".to_string());
+        let err = derive_payment_channel_open(DerivePaymentChannelOpenParams {
+            request: &request,
+            payer,
+            authorized_signer,
+            options: PaymentChannelOpenOptions::default(),
+        })
+        .unwrap_err();
+        assert!(err.to_string().contains("programId"));
+
+        let mut request = test_request(operator, recipient);
+        request.splits.push(SessionSplit {
+            recipient: "not-a-pubkey".to_string(),
+            bps: 10,
+        });
+        let err = derive_payment_channel_open(DerivePaymentChannelOpenParams {
+            request: &request,
+            payer,
+            authorized_signer,
+            options: PaymentChannelOpenOptions::default(),
+        })
+        .unwrap_err();
+        assert!(err.to_string().contains("split recipient"));
+    }
+
     #[tokio::test]
     async fn build_open_payment_channel_transaction_partially_signs_for_operator_broadcast() {
         let operator = Pubkey::new_unique();
@@ -546,6 +653,33 @@ mod tests {
             .expect("payer signer account");
         assert_eq!(tx.signatures[0], Signature::default());
         assert_ne!(tx.signatures[payer_index], Signature::default());
+    }
+
+    #[tokio::test]
+    async fn build_open_payment_channel_transaction_uses_explicit_fee_payer() {
+        let operator = Pubkey::new_unique();
+        let explicit_fee_payer = Pubkey::new_unique();
+        let recipient = Pubkey::new_unique();
+        let request = test_request(operator, recipient);
+        let payer_signer = make_signer(15);
+
+        let built =
+            build_open_payment_channel_transaction(BuildOpenPaymentChannelTransactionParams {
+                request: &request,
+                signer: payer_signer.as_ref(),
+                authorized_signer: make_signer(16).pubkey(),
+                fee_payer: Some(explicit_fee_payer),
+                recent_blockhash: Hash::new_unique(),
+                options: PaymentChannelOpenOptions {
+                    salt: Some(123),
+                    ..PaymentChannelOpenOptions::default()
+                },
+            })
+            .await
+            .unwrap();
+        let tx = decode_transaction(&built.transaction);
+
+        assert_eq!(tx.message.account_keys[0], explicit_fee_payer);
     }
 
     #[tokio::test]
@@ -597,6 +731,42 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn create_payment_channel_session_opener_applies_session_options() {
+        let operator = Pubkey::new_unique();
+        let recipient = Pubkey::new_unique();
+        let request = test_request(operator, recipient);
+        let payer_signer = make_signer(17);
+
+        let opened = create_payment_channel_session_opener(
+            &request,
+            payer_signer.as_ref(),
+            make_signer(18),
+            Hash::new_unique(),
+            PaymentChannelSessionOpenOptions {
+                open: PaymentChannelOpenOptions {
+                    salt: Some(19),
+                    ..PaymentChannelOpenOptions::default()
+                },
+                signature: Some("operator-will-fill".to_string()),
+                cumulative: Some(20),
+                expires_at: Some(1234),
+            },
+        )
+        .await
+        .unwrap();
+
+        match &opened.action {
+            SessionAction::Open(payload) => {
+                assert_eq!(payload.signature, "operator-will-fill");
+            }
+            _ => panic!("expected open action"),
+        }
+        let voucher = opened.session.prepare_increment(5).await.unwrap();
+        assert_eq!(voucher.data.cumulative, "25");
+        assert_eq!(voucher.data.expires_at, 1234);
+    }
+
     #[test]
     fn create_server_opened_session_opener_uses_operator_payer_without_transaction() {
         let operator = Pubkey::new_unique();
@@ -631,6 +801,25 @@ mod tests {
             }
             _ => panic!("expected open action"),
         }
+    }
+
+    #[test]
+    fn session_opener_rejects_non_pull_challenge() {
+        let operator = Pubkey::new_unique();
+        let recipient = Pubkey::new_unique();
+        let mut request = test_request(operator, recipient);
+        request.modes = vec![SessionMode::Push];
+        request.pull_voucher_strategy = None;
+
+        let err = match create_server_opened_payment_channel_session_opener(
+            &request,
+            make_signer(20),
+            ServerOpenedPaymentChannelSessionOpenOptions::default(),
+        ) {
+            Ok(_) => panic!("expected non-pull challenge to be rejected"),
+            Err(err) => err,
+        };
+        assert!(err.to_string().contains("pull mode"));
     }
 
     #[test]

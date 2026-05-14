@@ -1351,12 +1351,112 @@ mod tests {
             .unwrap_err();
         assert!(err.to_string().contains("payee does not match"));
 
-        let mut wrong_channel = payload;
+        let mut wrong_mint = payload.clone();
+        wrong_mint.mint = Some(payment_channels::pubkey_string(&Pubkey::new_unique()));
+        let err = server.payment_channel_open_params(&wrong_mint).unwrap_err();
+        assert!(err.to_string().contains("mint does not match"));
+
+        let mut missing_payer = payload.clone();
+        missing_payer.payer = None;
+        let err = server
+            .payment_channel_open_params(&missing_payer)
+            .unwrap_err();
+        assert!(err.to_string().contains("missing payer"));
+
+        let mut missing_salt = payload.clone();
+        missing_salt.salt = None;
+        let err = server
+            .payment_channel_open_params(&missing_salt)
+            .unwrap_err();
+        assert!(err.to_string().contains("missing salt"));
+
+        let mut missing_grace_period = payload.clone();
+        missing_grace_period.grace_period = None;
+        let err = server
+            .payment_channel_open_params(&missing_grace_period)
+            .unwrap_err();
+        assert!(err.to_string().contains("missing gracePeriod"));
+
+        let mut invalid_authorized_signer = payload.clone();
+        invalid_authorized_signer.authorized_signer = "not-a-pubkey".to_string();
+        let err = server
+            .payment_channel_open_params(&invalid_authorized_signer)
+            .unwrap_err();
+        assert!(err.to_string().contains("authorizedSigner"));
+
+        let sol_server = SessionServer::new(
+            SessionConfig {
+                currency: "SOL".to_string(),
+                modes: vec![SessionMode::Pull],
+                pull_voucher_strategy: Some(SessionPullVoucherStrategy::ClientVoucher),
+                ..make_server().config
+            },
+            MemoryChannelStore::new(),
+        );
+        let err = sol_server
+            .payment_channel_open_params(&payload)
+            .unwrap_err();
+        assert!(err.to_string().contains("SPL token"));
+
+        let mut wrong_channel = payload.clone();
         wrong_channel.channel_id = Some(payment_channels::pubkey_string(&Pubkey::new_unique()));
         let err = server
             .payment_channel_open_params(&wrong_channel)
             .unwrap_err();
         assert!(err.to_string().contains("channelId does not match"));
+    }
+
+    #[test]
+    fn payment_channel_open_params_resolves_token_2022_stablecoin_symbols() {
+        use crate::protocol::solana::{mints, programs};
+        use std::str::FromStr;
+
+        let payer = Pubkey::new_unique();
+        let authorized_signer = Pubkey::new_unique();
+        let payee = Pubkey::from_str(RECIPIENT).expect("valid recipient");
+        let mint = Pubkey::from_str(mints::PYUSD_DEVNET).expect("valid PYUSD mint");
+        let token_program =
+            Pubkey::from_str(programs::TOKEN_2022_PROGRAM).expect("valid token-2022 program");
+        let server = SessionServer::new(
+            SessionConfig {
+                currency: "PYUSD".to_string(),
+                network: "devnet".to_string(),
+                modes: vec![SessionMode::Pull],
+                pull_voucher_strategy: Some(SessionPullVoucherStrategy::ClientVoucher),
+                ..make_server().config
+            },
+            MemoryChannelStore::new(),
+        );
+        let expected = payment_channels::OpenChannelParams {
+            payer,
+            payee,
+            mint,
+            authorized_signer,
+            salt: 88,
+            deposit: 1_000_000,
+            grace_period: 901,
+            recipients: vec![],
+            token_program,
+            program_id: payment_channels::default_program_id(),
+        };
+        let channel = payment_channels::derive_channel_addresses(&expected).channel;
+        let payload = OpenPayload::payment_channel_with_mode(
+            SessionMode::Pull,
+            payment_channels::pubkey_string(&channel),
+            expected.deposit.to_string(),
+            payment_channels::pubkey_string(&payer),
+            RECIPIENT.to_string(),
+            mints::PYUSD_DEVNET.to_string(),
+            expected.salt,
+            expected.grace_period,
+            payment_channels::pubkey_string(&authorized_signer),
+            "pending".to_string(),
+        );
+
+        let params = server.payment_channel_open_params(&payload).unwrap();
+        assert_eq!(params.mint, mint);
+        assert_eq!(params.token_program, token_program);
+        assert_eq!(params.grace_period, 901);
     }
 
     #[tokio::test]
