@@ -64,8 +64,8 @@ pub use protocol::core::{
 pub use protocol::intents::{
     parse_units, ChargeRequest, ClosePayload, CommitPayload, CommitReceipt, CommitStatus,
     MeteredEnvelope, MeteringDirective, MeteringUsage, OpenPayload, SessionAction, SessionMode,
-    SessionRequest, SessionSplit, SignedVoucher, TopUpPayload, VoucherData, VoucherPayload,
-    DEFAULT_SESSION_EXPIRES_AT,
+    SessionPullVoucherStrategy, SessionRequest, SessionSplit, SignedVoucher, TopUpPayload,
+    VoucherData, VoucherPayload, DEFAULT_SESSION_EXPIRES_AT,
 };
 
 pub use protocol::solana::{

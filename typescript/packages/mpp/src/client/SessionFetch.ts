@@ -126,6 +126,7 @@ export class SessionFetchClient {
     #lastQueuedCumulative = 0n;
     #open: SessionFetchOpenState | undefined;
     #targetCumulative: bigint | undefined;
+    #trailingCommitTimer: ReturnType<typeof setTimeout> | undefined;
 
     constructor(parameters: SessionFetchClient.Parameters) {
         this.#fetch = parameters.fetch ?? globalThis.fetch;
@@ -238,8 +239,11 @@ export class SessionFetchClient {
 
         const now = Date.now();
         if (options.force || now - this.#lastCommitQueuedAt >= this.#liveCommitIntervalMs) {
+            this.clearTrailingCommit();
             this.#lastCommitQueuedAt = now;
             this.queueCommit(target);
+        } else {
+            this.scheduleTrailingCommit(this.#liveCommitIntervalMs - (now - this.#lastCommitQueuedAt));
         }
     }
 
@@ -258,6 +262,7 @@ export class SessionFetchClient {
     async flush(): Promise<CommitReceipt | null> {
         this.throwCommitFailure();
         if (this.#targetCumulative !== undefined) {
+            this.clearTrailingCommit();
             this.queueCommit(this.#targetCumulative);
         }
 
@@ -281,6 +286,32 @@ export class SessionFetchClient {
                 this.#commitFailure = toError(error);
                 return null;
             });
+    }
+
+    private scheduleTrailingCommit(delayMs: number): void {
+        if (this.#trailingCommitTimer !== undefined) {
+            return;
+        }
+
+        this.#trailingCommitTimer = setTimeout(
+            () => {
+                this.#trailingCommitTimer = undefined;
+                if (this.#targetCumulative === undefined) {
+                    return;
+                }
+                this.#lastCommitQueuedAt = Date.now();
+                this.queueCommit(this.#targetCumulative);
+            },
+            Math.max(0, delayMs),
+        );
+    }
+
+    private clearTrailingCommit(): void {
+        if (this.#trailingCommitTimer === undefined) {
+            return;
+        }
+        clearTimeout(this.#trailingCommitTimer);
+        this.#trailingCommitTimer = undefined;
     }
 
     private async commitTarget(target: bigint): Promise<CommitReceipt | null> {
@@ -424,19 +455,27 @@ export function createEphemeralSessionOpener(options: createEphemeralSessionOpen
             signer,
         });
         const signature = options.signature ?? randomBase58(64);
-        const payload =
-            mode === 'pull'
-                ? session.openPullAction({
-                      approvedAmount: options.approvedAmount ?? challenge.request.cap,
-                      initMultiDelegateTx: options.initMultiDelegateTx ?? randomBase64(64),
-                      owner: options.owner ?? randomBase58(32),
-                      signature,
-                      tokenAccount: options.tokenAccount ?? session.channelId,
-                      updateDelegationTx: options.updateDelegationTx,
-                  })
-                : session.openAction(options.deposit ?? challenge.request.cap, signature, {
-                      transaction: options.transaction,
-                  });
+        const useDelegatedPull =
+            mode === 'pull' &&
+            (challenge.request.pullVoucherStrategy === 'operatedVoucher' ||
+                options.approvedAmount !== undefined ||
+                options.initMultiDelegateTx !== undefined ||
+                options.owner !== undefined ||
+                options.tokenAccount !== undefined ||
+                options.updateDelegationTx !== undefined);
+        const payload = useDelegatedPull
+            ? session.openPullAction({
+                  approvedAmount: options.approvedAmount ?? challenge.request.cap,
+                  initMultiDelegateTx: options.initMultiDelegateTx ?? randomBase64(64),
+                  owner: options.owner ?? randomBase58(32),
+                  signature,
+                  tokenAccount: options.tokenAccount ?? session.channelId,
+                  updateDelegationTx: options.updateDelegationTx,
+              })
+            : session.openAction(options.deposit ?? challenge.request.cap, signature, {
+                  mode,
+                  transaction: options.transaction,
+              });
 
         return {
             payload,

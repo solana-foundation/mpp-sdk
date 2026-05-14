@@ -167,9 +167,20 @@ describe('ActiveSession', () => {
             action: 'open',
             gracePeriod: 60,
             mint: 'mint',
+            mode: 'push',
             payer: 'payer',
             payee: 'payee',
-            salt: 42,
+            salt: '42',
+            transaction: 'tx-base64',
+        });
+
+        expect(
+            activeSession.openAction(1_000_000, 'pending', { mode: 'pull', transaction: 'tx-base64' }),
+        ).toMatchObject({
+            action: 'open',
+            channelId: activeSession.channelId,
+            deposit: '1000000',
+            mode: 'pull',
             transaction: 'tx-base64',
         });
 
@@ -288,6 +299,38 @@ describe('session client method', () => {
             action: 'open',
             approvedAmount: '1000000',
             mode: 'pull',
+        });
+
+        const clientVoucherPullCredential = await method.createCredential({
+            challenge: challenge({ modes: ['pull'], pullVoucherStrategy: 'clientVoucher' }),
+            context: { action: 'open', signature: 'pending', transaction: 'tx-base64' },
+        });
+        expect(Credential.deserialize<SessionAction>(clientVoucherPullCredential).payload).toMatchObject({
+            action: 'open',
+            channelId: activeSession.channelId,
+            deposit: '1000000',
+            mode: 'pull',
+            transaction: 'tx-base64',
+        });
+
+        const detailedOpen = Credential.deserialize<SessionAction>(
+            await method.createCredential({
+                challenge: challenge(),
+                context: {
+                    action: 'open',
+                    deposit: 100,
+                    gracePeriod: 60,
+                    mint: 'mint',
+                    payee: 'payee',
+                    payer: 'payer',
+                    salt: (1n << 64n) - 7n,
+                    signature: 'open-sig',
+                },
+            }),
+        ).payload;
+        expect(detailedOpen).toMatchObject({
+            action: 'open',
+            salt: '18446744073709551609',
         });
 
         const commitCredential = await method.createCredential({

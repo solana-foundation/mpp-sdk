@@ -8,6 +8,7 @@
 use std::str::FromStr;
 
 use solana_address::Address;
+use solana_instruction::AccountMeta;
 use solana_instruction::Instruction;
 use solana_pubkey::Pubkey;
 
@@ -390,6 +391,14 @@ pub fn build_distribute_instruction(
     let (payer_token_account, _) = find_associated_token_address(payer, mint, token_program);
     let (payee_token_account, _) = find_associated_token_address(payee, mint, token_program);
     let (treasury_token_account, _) = find_associated_token_address(treasury, mint, token_program);
+    let recipient_token_accounts = recipients
+        .iter()
+        .map(|entry| {
+            let (token_account, _) =
+                find_associated_token_address(&entry.recipient, mint, token_program);
+            AccountMeta::new(to_address(&token_account), false)
+        })
+        .collect::<Vec<_>>();
     let recipients = recipients
         .iter()
         .map(|entry| DistributionEntry {
@@ -407,6 +416,7 @@ pub fn build_distribute_instruction(
         .treasury_token_account(to_address(&treasury_token_account))
         .mint(to_address(mint))
         .token_program(to_address(token_program))
+        .add_remaining_accounts(&recipient_token_accounts)
         .distribute_args(DistributeArgs { recipients })
         .instruction();
     ix.program_id = to_address(program_id);

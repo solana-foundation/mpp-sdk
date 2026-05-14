@@ -26,7 +26,8 @@ use crate::error::{Error, Result};
 use crate::program::payment_channels;
 use crate::protocol::intents::session::{
     ClosePayload, CommitPayload, CommitReceipt, CommitStatus, MeteringDirective, OpenPayload,
-    SessionMode, SessionRequest, SessionSplit, SignedVoucher, TopUpPayload, VoucherPayload,
+    SessionMode, SessionPullVoucherStrategy, SessionRequest, SessionSplit, SignedVoucher,
+    TopUpPayload, VoucherPayload,
 };
 use crate::store::{ChannelState, ChannelStore, CommittedDelivery, PendingDelivery, StoreError};
 
@@ -77,6 +78,11 @@ pub struct SessionConfig {
     /// `[Push]` means only the payment-channel push mode is supported.
     pub modes: Vec<SessionMode>,
 
+    /// Voucher authority used for pull sessions.
+    ///
+    /// Required when `modes` includes [`SessionMode::Pull`].
+    pub pull_voucher_strategy: Option<SessionPullVoucherStrategy>,
+
     /// Solana RPC URL for on-chain open-transaction verification.
     ///
     /// When set, `process_open` calls `getSignatureStatuses` to confirm the
@@ -98,6 +104,7 @@ impl Default for SessionConfig {
             program_id: None,
             min_voucher_delta: 0,
             modes: vec![SessionMode::Push],
+            pull_voucher_strategy: None,
             rpc_url: None,
         }
     }
@@ -232,19 +239,36 @@ impl<S: ChannelStore> SessionServer<S> {
             } else {
                 self.config.modes.clone()
             },
+            pull_voucher_strategy: if self.config.modes.contains(&SessionMode::Pull) {
+                self.config.pull_voucher_strategy.clone()
+            } else {
+                None
+            },
             recent_blockhash: None,
         }
     }
 
     /// Process an `open` action: persist the channel state.
     ///
-    /// Accepts both push (payment channel) and pull (SPL delegation) modes.
+    /// Accepts payment-channel opens and operated-voucher delegated-token opens.
     /// Returns the stored `ChannelState`.
     ///
     /// When `config.rpc_url` is set, confirms the open transaction is finalized
     /// on-chain before persisting — rejects the open if the tx is unknown or
     /// failed. Leave `rpc_url` as `None` in unit tests.
     pub async fn process_open(&self, payload: &OpenPayload) -> Result<ChannelState> {
+        let supports_mode = if self.config.modes.is_empty() {
+            payload.mode == SessionMode::Push
+        } else {
+            self.config.modes.contains(&payload.mode)
+        };
+        if !supports_mode {
+            return Err(Error::Other(format!(
+                "Session mode {:?} is not supported by this challenge",
+                payload.mode
+            )));
+        }
+
         let session_id = payload.session_id()?;
         let deposit = payload.deposit_amount()?;
 
@@ -263,9 +287,9 @@ impl<S: ChannelStore> SessionServer<S> {
 
         // On-chain verification: confirm the open transaction was accepted.
         //
-        // Pull mode: the delegation state is already validated by the caller via
-        // `run_pull_setup` (which fetches and confirms the MultiDelegate + FixedDelegation
-        // PDAs on-chain before `process_open` is invoked). Skip tx-sig verification.
+        // Pull mode: host integrations submit server-broadcast transactions or
+        // validate delegated-token state before invoking this lower-level store
+        // method. Skip tx-sig verification here.
         //
         // Push mode: verify the payment-channel open tx is confirmed before persisting.
         if payload.mode == SessionMode::Push {
@@ -987,8 +1011,8 @@ pub fn compute_distribution_hash(_recipient: &Pubkey, splits: &[(Pubkey, u16)]) 
 mod tests {
     use super::*;
     use crate::protocol::intents::session::{
-        ClosePayload, CommitPayload, CommitStatus, OpenPayload, SessionMode, VoucherData,
-        VoucherPayload,
+        ClosePayload, CommitPayload, CommitStatus, OpenPayload, SessionMode,
+        SessionPullVoucherStrategy, VoucherData, VoucherPayload,
     };
     use crate::store::MemoryChannelStore;
 
@@ -1007,6 +1031,7 @@ mod tests {
                 program_id: None,
                 min_voucher_delta: 0,
                 modes: vec![SessionMode::Push],
+                pull_voucher_strategy: None,
                 rpc_url: None,
             },
             MemoryChannelStore::new(),
@@ -1026,6 +1051,7 @@ mod tests {
                 program_id: None,
                 min_voucher_delta: min_delta,
                 modes: vec![SessionMode::Push],
+                pull_voucher_strategy: None,
                 rpc_url: None,
             },
             MemoryChannelStore::new(),
@@ -1098,6 +1124,54 @@ mod tests {
             .process_open(&open_payload("chan1", 20_000_000, "signer1"))
             .await
             .is_err());
+    }
+
+    #[tokio::test]
+    async fn process_open_rejects_unadvertised_pull_mode() {
+        let server = make_server();
+        let payload = OpenPayload::payment_channel_with_mode(
+            SessionMode::Pull,
+            "chan1".to_string(),
+            "1000000".to_string(),
+            "payer".to_string(),
+            RECIPIENT.to_string(),
+            "mint".to_string(),
+            1,
+            900,
+            "signer1".to_string(),
+            "pending".to_string(),
+        );
+
+        let err = server.process_open(&payload).await.unwrap_err();
+        assert!(err.to_string().contains("not supported"));
+    }
+
+    #[tokio::test]
+    async fn process_open_accepts_advertised_pull_client_voucher_channel() {
+        let server = SessionServer::new(
+            SessionConfig {
+                modes: vec![SessionMode::Pull],
+                pull_voucher_strategy: Some(SessionPullVoucherStrategy::ClientVoucher),
+                ..make_server().config
+            },
+            MemoryChannelStore::new(),
+        );
+        let payload = OpenPayload::payment_channel_with_mode(
+            SessionMode::Pull,
+            "chan1".to_string(),
+            "1000000".to_string(),
+            "payer".to_string(),
+            RECIPIENT.to_string(),
+            "mint".to_string(),
+            1,
+            900,
+            "signer1".to_string(),
+            "pending".to_string(),
+        );
+
+        let state = server.process_open(&payload).await.unwrap();
+        assert_eq!(state.channel_id, "chan1");
+        assert_eq!(state.deposit, 1_000_000);
     }
 
     #[tokio::test]
@@ -1281,6 +1355,7 @@ mod tests {
             program_id: None,
             min_voucher_delta: 0,
             modes: vec![SessionMode::Push],
+            pull_voucher_strategy: None,
             rpc_url: None,
         };
         let server = SessionServer::new(config, MemoryChannelStore::new());
@@ -1302,6 +1377,7 @@ mod tests {
             program_id: None,
             min_voucher_delta: 500,
             modes: vec![SessionMode::Push],
+            pull_voucher_strategy: None,
             rpc_url: None,
         };
         let server = SessionServer::new(config, MemoryChannelStore::new());
@@ -1329,6 +1405,7 @@ mod tests {
             program_id: None,
             min_voucher_delta: 0,
             modes: vec![SessionMode::Push, SessionMode::Pull],
+            pull_voucher_strategy: Some(SessionPullVoucherStrategy::ClientVoucher),
             rpc_url: None,
         };
         let server = SessionServer::new(config, MemoryChannelStore::new());
@@ -1336,6 +1413,10 @@ mod tests {
         assert_eq!(req.modes.len(), 2);
         assert!(req.modes.contains(&SessionMode::Push));
         assert!(req.modes.contains(&SessionMode::Pull));
+        assert_eq!(
+            req.pull_voucher_strategy,
+            Some(SessionPullVoucherStrategy::ClientVoucher)
+        );
     }
 
     // ── verify_voucher ────────────────────────────────────────────────────────

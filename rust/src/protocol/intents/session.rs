@@ -12,6 +12,42 @@ use serde::{Deserialize, Serialize};
 /// round it before the credential is decoded.
 pub const DEFAULT_SESSION_EXPIRES_AT: i64 = 4_102_444_800;
 
+fn serialize_optional_u64_as_string<S>(
+    value: &Option<u64>,
+    serializer: S,
+) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    match value {
+        Some(value) => serializer.serialize_some(&value.to_string()),
+        None => serializer.serialize_none(),
+    }
+}
+
+fn deserialize_optional_u64_from_string_or_number<'de, D>(
+    deserializer: D,
+) -> Result<Option<u64>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = Option::<serde_json::Value>::deserialize(deserializer)?;
+    match value {
+        None | Some(serde_json::Value::Null) => Ok(None),
+        Some(serde_json::Value::String(value)) => value
+            .parse::<u64>()
+            .map(Some)
+            .map_err(serde::de::Error::custom),
+        Some(serde_json::Value::Number(value)) => value
+            .as_u64()
+            .map(Some)
+            .ok_or_else(|| serde::de::Error::custom("salt must be an unsigned 64-bit integer")),
+        Some(_) => Err(serde::de::Error::custom(
+            "salt must be a decimal string or unsigned 64-bit integer",
+        )),
+    }
+}
+
 /// On-chain funding mechanism for a session.
 ///
 /// Advertised by the server in [`SessionRequest::modes`]; the client picks
@@ -29,19 +65,34 @@ pub const DEFAULT_SESSION_EXPIRES_AT: i64 = 4_102_444_800;
 /// Client needs SOL (for fees) + the session token (e.g. USDC).
 ///
 /// ## Pull
-/// Client calls SPL `approve` via the
-/// [multi-delegator](https://github.com/solana-program/multi-delegator)
-/// program, designating the operator as a token delegate up to
-/// `approved_amount`.  The operator fee-pays and broadcasts the approve
-/// transaction, then pulls from the token account at session close.
-/// Client only needs the session token — no SOL required.
+/// Pull only means the operator is involved in broadcasting or settling the
+/// session. The concrete voucher authority is described by
+/// [`SessionPullVoucherStrategy`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum SessionMode {
     /// Payment channel backed by an on-chain escrow deposit (client-funded).
     Push,
-    /// SPL token delegation — operator fee-pays the approve tx and pulls at close.
+    /// Operator-assisted pull session. Voucher authority is declared separately.
     Pull,
+}
+
+/// Voucher authority used when [`SessionMode::Pull`] is advertised.
+///
+/// This intentionally separates "how the session is opened" from "who signs
+/// spend vouchers":
+///
+/// - `clientVoucher`: the client signs cumulative vouchers. The operator may
+///   use those vouchers as off-chain receipts without multi-delegate setup.
+/// - `operatedVoucher`: the operator signs vouchers after metering/receipts and
+///   uses multi-delegate setup for delegated token movement.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum SessionPullVoucherStrategy {
+    /// Client-signed cumulative vouchers.
+    ClientVoucher,
+    /// Operator-signed vouchers.
+    OperatedVoucher,
 }
 
 /// Session intent request — the payload embedded in a 402 challenge.
@@ -96,11 +147,21 @@ pub struct SessionRequest {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub modes: Vec<SessionMode>,
 
+    /// Voucher authority for pull-mode sessions.
+    ///
+    /// Required when `modes` includes [`SessionMode::Pull`]. Omitted when pull
+    /// is not supported.
+    #[serde(
+        rename = "pullVoucherStrategy",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub pull_voucher_strategy: Option<SessionPullVoucherStrategy>,
+
     /// Recent blockhash pre-fetched by the server (base58).
     ///
-    /// Included for pull-mode so the client can build delegation transactions
-    /// without a second RPC round-trip. The client SHOULD use this when
-    /// present rather than fetching its own.
+    /// Included when the client needs to build server-broadcast transactions
+    /// without a second RPC round-trip. The client SHOULD use this when present
+    /// rather than fetching its own.
     #[serde(rename = "recentBlockhash", skip_serializing_if = "Option::is_none")]
     pub recent_blockhash: Option<String>,
 }
@@ -142,15 +203,19 @@ pub enum SessionAction {
 
 /// Payload for the `open` action.
 ///
-/// Use [`OpenPayload::push`] or [`OpenPayload::pull`] to construct.
+/// Use [`OpenPayload::push`], [`OpenPayload::payment_channel`], or
+/// [`OpenPayload::pull`] to construct.
 /// Inspect [`OpenPayload::mode`] to distinguish variants on the server.
 ///
 /// Wire format:
 /// ```json
-/// // Push mode
+/// // Payment-channel mode, client-broadcast push
 /// {"action":"open","mode":"push","channelId":"...","deposit":"...","authorizedSigner":"...","signature":"..."}
 ///
-/// // Pull mode
+/// // Payment-channel mode, server-broadcast pull
+/// {"action":"open","mode":"pull","channelId":"...","deposit":"...","authorizedSigner":"...","transaction":"..."}
+///
+/// // Operated-voucher pull mode
 /// {"action":"open","mode":"pull","tokenAccount":"...","approvedAmount":"...","authorizedSigner":"...","signature":"..."}
 /// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -180,7 +245,15 @@ pub struct OpenPayload {
     pub mint: Option<String>,
 
     /// Salt used in the channel PDA seeds.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    ///
+    /// Serialized as a decimal string because authorization headers are JSON
+    /// canonicalized, and arbitrary `u64` values are not safe JSON numbers.
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional_u64_from_string_or_number",
+        serialize_with = "serialize_optional_u64_as_string",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub salt: Option<u64>,
 
     /// Grace period used by the on-chain close path.
@@ -235,8 +308,10 @@ pub struct OpenPayload {
 
     /// Transaction signature (base58) proving the on-chain action.
     ///
-    /// - Push: open transaction signature confirming the payment channel exists.
-    /// - Pull: approve transaction signature confirming the SPL delegation.
+    /// - Payment-channel push: client-broadcast open transaction signature.
+    /// - Payment-channel pull: server-broadcast open transaction signature, filled
+    ///   by the server after submission.
+    /// - Operated-voucher pull: delegation setup transaction signature.
     pub signature: String,
 }
 
@@ -281,8 +356,36 @@ impl OpenPayload {
         authorized_signer: String,
         signature: String,
     ) -> Self {
+        Self::payment_channel_with_mode(
+            SessionMode::Push,
+            channel_id,
+            deposit,
+            payer,
+            payee,
+            mint,
+            salt,
+            grace_period,
+            authorized_signer,
+            signature,
+        )
+    }
+
+    /// Construct a payment-channel open payload with an explicit submission mode.
+    #[allow(clippy::too_many_arguments)]
+    pub fn payment_channel_with_mode(
+        mode: SessionMode,
+        channel_id: String,
+        deposit: String,
+        payer: String,
+        payee: String,
+        mint: String,
+        salt: u64,
+        grace_period: u32,
+        authorized_signer: String,
+        signature: String,
+    ) -> Self {
         Self {
-            mode: SessionMode::Push,
+            mode,
             channel_id: Some(channel_id),
             deposit: Some(deposit),
             payer: Some(payer),
@@ -353,28 +456,42 @@ impl OpenPayload {
 
     /// Session identifier used as the store key.
     ///
-    /// - Push: `channel_id` (payment-channel address)
-    /// - Pull: `token_account` (SPL token account address)
+    /// - Payment channel: `channel_id`
+    /// - Operated-voucher pull: `token_account`
     pub fn session_id(&self) -> crate::error::Result<&str> {
+        if let Some(channel_id) = self.channel_id.as_deref() {
+            return Ok(channel_id);
+        }
+
         match self.mode {
-            SessionMode::Push => self.channel_id.as_deref().ok_or_else(|| {
-                crate::error::Error::Other("push open missing channelId".to_string())
-            }),
+            SessionMode::Push => Err(crate::error::Error::Other(
+                "push open missing channelId".to_string(),
+            )),
             SessionMode::Pull => self.token_account.as_deref().ok_or_else(|| {
-                crate::error::Error::Other("pull open missing tokenAccount".to_string())
+                crate::error::Error::Other(
+                    "pull open missing channelId or tokenAccount".to_string(),
+                )
             }),
         }
     }
 
     /// Deposit / approved amount for this open (base units).
     pub fn deposit_amount(&self) -> crate::error::Result<u64> {
-        let raw = match self.mode {
-            SessionMode::Push => self.deposit.as_deref().ok_or_else(|| {
-                crate::error::Error::Other("push open missing deposit".to_string())
-            })?,
-            SessionMode::Pull => self.approved_amount.as_deref().ok_or_else(|| {
-                crate::error::Error::Other("pull open missing approvedAmount".to_string())
-            })?,
+        let raw = if let Some(deposit) = self.deposit.as_deref() {
+            deposit
+        } else {
+            match self.mode {
+                SessionMode::Push => {
+                    return Err(crate::error::Error::Other(
+                        "push open missing deposit".to_string(),
+                    ));
+                }
+                SessionMode::Pull => self.approved_amount.as_deref().ok_or_else(|| {
+                    crate::error::Error::Other(
+                        "pull open missing deposit or approvedAmount".to_string(),
+                    )
+                })?,
+            }
         };
         raw.parse()
             .map_err(|_| crate::error::Error::Other(format!("invalid deposit amount: {raw}")))
@@ -614,6 +731,19 @@ mod tests {
         }
     }
 
+    #[test]
+    fn session_pull_voucher_strategy_roundtrip() {
+        let json = serde_json::to_string(&SessionPullVoucherStrategy::ClientVoucher).unwrap();
+        assert_eq!(json, r#""clientVoucher""#);
+        let back: SessionPullVoucherStrategy = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, SessionPullVoucherStrategy::ClientVoucher);
+
+        let json = serde_json::to_string(&SessionPullVoucherStrategy::OperatedVoucher).unwrap();
+        assert_eq!(json, r#""operatedVoucher""#);
+        let back: SessionPullVoucherStrategy = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, SessionPullVoucherStrategy::OperatedVoucher);
+    }
+
     // ── SessionRequest ────────────────────────────────────────────────────────
 
     #[test]
@@ -631,6 +761,7 @@ mod tests {
             external_id: None,
             min_voucher_delta: None,
             modes: vec![SessionMode::Push],
+            pull_voucher_strategy: None,
             recent_blockhash: None,
         };
         let json = serde_json::to_string(&req).unwrap();
@@ -656,6 +787,7 @@ mod tests {
             external_id: None,
             min_voucher_delta: None,
             modes: vec![],
+            pull_voucher_strategy: None,
             recent_blockhash: None,
         };
         let json = serde_json::to_string(&req).unwrap();
@@ -682,15 +814,21 @@ mod tests {
             external_id: None,
             min_voucher_delta: None,
             modes: vec![SessionMode::Push, SessionMode::Pull],
+            pull_voucher_strategy: Some(SessionPullVoucherStrategy::ClientVoucher),
             recent_blockhash: None,
         };
         let json = serde_json::to_string(&req).unwrap();
         assert!(json.contains("\"push\""));
         assert!(json.contains("\"pull\""));
+        assert!(json.contains("\"pullVoucherStrategy\":\"clientVoucher\""));
         let back: SessionRequest = serde_json::from_str(&json).unwrap();
         assert_eq!(back.modes.len(), 2);
         assert_eq!(back.modes[0], SessionMode::Push);
         assert_eq!(back.modes[1], SessionMode::Pull);
+        assert_eq!(
+            back.pull_voucher_strategy,
+            Some(SessionPullVoucherStrategy::ClientVoucher)
+        );
     }
 
     #[test]
@@ -717,6 +855,7 @@ mod tests {
             external_id: Some("ref-1".to_string()),
             min_voucher_delta: None,
             modes: vec![],
+            pull_voucher_strategy: None,
             recent_blockhash: None,
         };
         let json = serde_json::to_string(&req).unwrap();
@@ -791,6 +930,32 @@ mod tests {
         assert_eq!(p.transaction.as_deref(), Some("open-tx"));
         assert_eq!(p.init_multi_delegate_tx.as_deref(), Some("init-tx"));
         assert_eq!(p.update_delegation_tx.as_deref(), Some("update-tx"));
+    }
+
+    #[test]
+    fn open_payload_pull_payment_channel_uses_channel_id_and_deposit() {
+        let p = OpenPayload::payment_channel_with_mode(
+            SessionMode::Pull,
+            "chan1".to_string(),
+            "1000000".to_string(),
+            "payer1".to_string(),
+            "payee1".to_string(),
+            "mint1".to_string(),
+            99,
+            45,
+            "signer1".to_string(),
+            "pending".to_string(),
+        )
+        .with_transaction("open-tx".to_string());
+
+        assert_eq!(p.mode, SessionMode::Pull);
+        assert_eq!(p.session_id().unwrap(), "chan1");
+        assert_eq!(p.deposit_amount().unwrap(), 1_000_000);
+        assert_eq!(p.channel_id.as_deref(), Some("chan1"));
+        assert_eq!(p.deposit.as_deref(), Some("1000000"));
+        assert!(p.token_account.is_none());
+        assert!(p.approved_amount.is_none());
+        assert_eq!(p.transaction.as_deref(), Some("open-tx"));
     }
 
     #[test]
@@ -881,6 +1046,33 @@ mod tests {
         assert_eq!(back.mode, SessionMode::Pull);
         assert_eq!(back.token_account.as_deref(), Some("tokacct"));
         assert_eq!(back.owner.as_deref(), Some("wallet1"));
+    }
+
+    #[test]
+    fn payment_channel_salt_serializes_as_string_and_accepts_legacy_number() {
+        let salt = u64::MAX - 7;
+        let p = OpenPayload::payment_channel(
+            "chan1".to_string(),
+            "1000000".to_string(),
+            "payer1".to_string(),
+            "payee1".to_string(),
+            "mint1".to_string(),
+            salt,
+            900,
+            "signer1".to_string(),
+            "txsig".to_string(),
+        );
+
+        let json = serde_json::to_string(&p).unwrap();
+        assert!(json.contains(&format!(r#""salt":"{salt}""#)));
+        let back: OpenPayload = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.salt, Some(salt));
+
+        let legacy_json = format!(
+            r#"{{"mode":"push","channelId":"chan1","deposit":"1000000","payer":"payer1","payee":"payee1","mint":"mint1","salt":42,"gracePeriod":900,"authorizedSigner":"signer1","signature":"txsig"}}"#
+        );
+        let legacy: OpenPayload = serde_json::from_str(&legacy_json).unwrap();
+        assert_eq!(legacy.salt, Some(42));
     }
 
     #[test]
@@ -1200,6 +1392,7 @@ mod tests {
             external_id: None,
             min_voucher_delta: Some("500".to_string()),
             modes: vec![],
+            pull_voucher_strategy: None,
             recent_blockhash: None,
         };
         let json = serde_json::to_string(&req).unwrap();
@@ -1223,6 +1416,7 @@ mod tests {
             external_id: None,
             min_voucher_delta: None,
             modes: vec![],
+            pull_voucher_strategy: None,
             recent_blockhash: None,
         };
         let json = serde_json::to_string(&req).unwrap();

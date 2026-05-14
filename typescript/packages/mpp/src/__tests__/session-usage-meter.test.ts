@@ -178,6 +178,47 @@ describe('SessionUsageMeter', () => {
         expect(client.cumulativeAmount).toBe('25');
     });
 
+    test('schedules a trailing commit when usage advances inside the live commit interval', async () => {
+        const gateway = createSessionGatewayMock();
+        const events: SessionFetchEvent[] = [];
+        const client = createSessionFetch({
+            fetch: gateway.fetch,
+            liveCommitIntervalMs: 100,
+            onEvent: event => events.push(event),
+            opener: createEphemeralSessionOpener({ mode: 'pull' }),
+        });
+        const meter = createSessionUsageMeter<number>({
+            client,
+            priceUsage: (tokens, context) => ({
+                cumulativeAmount: (BigInt(context.baselineCumulativeAmount) + BigInt(tokens)).toString(),
+                deltaAmount: tokens.toString(),
+            }),
+        });
+
+        await client.fetch('https://api.test/v1/generate');
+
+        expect(meter.recordUsage(10)).toBe(true);
+        await waitUntil(() => gateway.commits.length === 1);
+
+        expect(meter.recordUsage(25)).toBe(true);
+        expect(gateway.commits.map(commit => commit.amount)).toEqual(['10']);
+
+        await waitUntil(() => gateway.commits.length === 2);
+
+        expect(gateway.deliveries.map(delivery => delivery.amount)).toEqual(['10', '15']);
+        expect(gateway.commits.map(commit => commit.amount)).toEqual(['10', '15']);
+        expect(events.map(event => event.type)).toEqual([
+            'challenge',
+            'open',
+            'retry',
+            'watermark',
+            'commit',
+            'watermark',
+            'commit',
+        ]);
+        expect(client.cumulativeAmount).toBe('25');
+    });
+
     test('resets the operation baseline while reusing an open session', async () => {
         const gateway = createSessionGatewayMock();
         const client = createSessionFetch({
@@ -259,4 +300,18 @@ function expectString(value: unknown): string {
         throw new Error('expected string');
     }
     return value;
+}
+
+async function waitUntil(predicate: () => boolean, timeoutMs = 1_000): Promise<void> {
+    const start = Date.now();
+    while (!predicate()) {
+        if (Date.now() - start > timeoutMs) {
+            throw new Error('timed out waiting for condition');
+        }
+        await sleep(5);
+    }
+}
+
+async function sleep(ms: number): Promise<void> {
+    await new Promise(resolve => setTimeout(resolve, ms));
 }

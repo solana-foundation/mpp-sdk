@@ -31,6 +31,14 @@ export type AmountLike = bigint | number | string;
 export type SessionMode = 'pull' | 'push';
 
 /**
+ * Voucher authority used when a challenge advertises pull-mode sessions.
+ *
+ * `clientVoucher` does not require multi-delegate setup; `operatedVoucher`
+ * is the operator-signed path that uses delegated token movement.
+ */
+export type SessionPullVoucherStrategy = 'clientVoucher' | 'operatedVoucher';
+
+/**
  * Signer capable of Ed25519-signing exact voucher message bytes.
  */
 export type SessionSigner = MessagePartialSigner;
@@ -57,6 +65,7 @@ export interface SessionRequest extends Record<string, unknown> {
     readonly network?: string | undefined;
     readonly operator: string;
     readonly programId?: string | undefined;
+    readonly pullVoucherStrategy?: SessionPullVoucherStrategy | undefined;
     readonly recentBlockhash?: string | undefined;
     readonly recipient: string;
     readonly splits?: SessionSplit[] | undefined;
@@ -97,7 +106,7 @@ export interface SignedVoucher {
 }
 
 /**
- * Open action payload for push payment channels or pull SPL delegation.
+ * Open action payload for payment channels or delegated-token pull sessions.
  */
 export interface OpenPayload {
     readonly approvedAmount?: string | undefined;
@@ -111,7 +120,7 @@ export interface OpenPayload {
     readonly owner?: string | undefined;
     readonly payee?: string | undefined;
     readonly payer?: string | undefined;
-    readonly salt?: number | undefined;
+    readonly salt?: string | undefined;
     readonly signature: string;
     readonly tokenAccount?: string | undefined;
     readonly transaction?: string | undefined;
@@ -202,7 +211,7 @@ export interface SessionContext {
     readonly owner?: string | undefined;
     readonly payee?: string | undefined;
     readonly payer?: string | undefined;
-    readonly salt?: number | undefined;
+    readonly salt?: AmountLike | undefined;
     readonly session?: ActiveSession | undefined;
     readonly signature?: string | undefined;
     readonly source?: string | undefined;
@@ -426,7 +435,7 @@ export class ActiveSession {
     }
 
     /**
-     * Builds a push-mode `open` action after the open transaction is confirmed.
+     * Builds a payment-channel `open` action.
      */
     openAction(
         deposit: AmountLike,
@@ -438,14 +447,14 @@ export class ActiveSession {
             authorizedSigner: this.authorizedSigner,
             channelId: this.#channelId,
             deposit: formatAmount(deposit, 'deposit'),
-            mode: 'push',
+            mode: options.mode ?? 'push',
             signature,
             ...(options.transaction ? { transaction: options.transaction } : {}),
         };
     }
 
     /**
-     * Builds a detailed payment-channel push-mode `open` action.
+     * Builds a detailed payment-channel `open` action.
      */
     openPaymentChannelAction(
         parameters: ActiveSession.PaymentChannelOpenParameters,
@@ -457,10 +466,10 @@ export class ActiveSession {
             deposit: formatAmount(parameters.deposit, 'deposit'),
             gracePeriod: parameters.gracePeriod,
             mint: parameters.mint,
-            mode: 'push',
+            mode: parameters.mode ?? 'push',
             payee: parameters.payee,
             payer: parameters.payer,
-            salt: parameters.salt,
+            salt: formatAmount(parameters.salt, 'salt'),
             signature: parameters.signature,
             ...(parameters.transaction ? { transaction: parameters.transaction } : {}),
         };
@@ -524,6 +533,7 @@ export declare namespace ActiveSession {
     }
 
     interface OpenOptions {
+        readonly mode?: SessionMode | undefined;
         readonly transaction?: string | undefined;
     }
 
@@ -533,7 +543,7 @@ export declare namespace ActiveSession {
         readonly mint: string;
         readonly payee: string;
         readonly payer: string;
-        readonly salt: number;
+        readonly salt: AmountLike;
         readonly signature: string;
     }
 
@@ -638,7 +648,7 @@ function createOpenAction(
     const signature = requireString(context.signature, 'signature');
     const mode = context.mode ?? challenge.request.modes?.[0] ?? 'push';
 
-    if (mode === 'pull') {
+    if (mode === 'pull' && shouldUseDelegatedPull(context, challenge)) {
         return session_.openPullAction({
             approvedAmount: context.approvedAmount ?? context.deposit ?? challenge.request.cap,
             initMultiDelegateTx: context.initMultiDelegateTx,
@@ -660,6 +670,7 @@ function createOpenAction(
             deposit: context.deposit ?? challenge.request.cap,
             gracePeriod: requireValue(context.gracePeriod, 'gracePeriod'),
             mint: requireString(context.mint, 'mint'),
+            mode,
             payee: requireString(context.payee, 'payee'),
             payer: requireString(context.payer, 'payer'),
             salt: requireValue(context.salt, 'salt'),
@@ -669,8 +680,21 @@ function createOpenAction(
     }
 
     return session_.openAction(context.deposit ?? challenge.request.cap, signature, {
+        mode,
         transaction: context.transaction,
     });
+}
+
+function shouldUseDelegatedPull(context: SessionContext, challenge: SessionChallenge): boolean {
+    if (context.mode !== 'pull' && challenge.request.modes?.[0] !== 'pull') return false;
+    return (
+        challenge.request.pullVoucherStrategy === 'operatedVoucher' ||
+        context.approvedAmount !== undefined ||
+        context.initMultiDelegateTx !== undefined ||
+        context.owner !== undefined ||
+        context.tokenAccount !== undefined ||
+        context.updateDelegationTx !== undefined
+    );
 }
 
 async function createVoucherAction(session_: ActiveSession, context: SessionContext): Promise<SessionAction> {

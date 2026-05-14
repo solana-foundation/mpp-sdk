@@ -25,10 +25,9 @@ use solana_pubkey::Pubkey;
 
 use crate::error::{Error, Result};
 use crate::protocol::intents::session::{
-    ClosePayload, OpenPayload, SessionAction, SignedVoucher, TopUpPayload, VoucherData,
-    VoucherPayload, DEFAULT_SESSION_EXPIRES_AT,
+    ClosePayload, OpenPayload, SessionAction, SessionMode, SignedVoucher, TopUpPayload,
+    VoucherData, VoucherPayload, DEFAULT_SESSION_EXPIRES_AT,
 };
-// SessionMode is used indirectly via OpenPayload constructors.
 
 /// Default voucher expiry: 2100-01-01T00:00:00Z.
 ///
@@ -221,7 +220,33 @@ impl ActiveSession {
         grace_period: u32,
         open_tx_signature: &str,
     ) -> SessionAction {
-        SessionAction::Open(OpenPayload::payment_channel(
+        self.open_payment_channel_action_with_mode(
+            SessionMode::Push,
+            deposit,
+            payer,
+            payee,
+            mint,
+            salt,
+            grace_period,
+            open_tx_signature,
+        )
+    }
+
+    /// Build a payment-channel `SessionAction::Open` with an explicit submission mode.
+    #[allow(clippy::too_many_arguments)]
+    pub fn open_payment_channel_action_with_mode(
+        &self,
+        mode: SessionMode,
+        deposit: u64,
+        payer: &str,
+        payee: &str,
+        mint: &str,
+        salt: u64,
+        grace_period: u32,
+        open_tx_signature: &str,
+    ) -> SessionAction {
+        SessionAction::Open(OpenPayload::payment_channel_with_mode(
+            mode,
             self.channel_id_str(),
             deposit.to_string(),
             payer.to_string(),
@@ -446,6 +471,33 @@ mod tests {
                 assert_eq!(p.salt, Some(42));
                 assert_eq!(p.grace_period, Some(60));
                 assert_eq!(p.signature, "open-sig");
+            }
+            _ => panic!("Expected Open"),
+        }
+    }
+
+    #[test]
+    fn open_payment_channel_action_can_use_pull_mode() {
+        use crate::protocol::intents::session::SessionMode;
+        let s = make_session();
+        let channel_id = s.channel_id_str();
+        let action = s.open_payment_channel_action_with_mode(
+            SessionMode::Pull,
+            9_000,
+            "payer",
+            "payee",
+            "mint",
+            42,
+            60,
+            "pending",
+        );
+        match action {
+            SessionAction::Open(p) => {
+                assert_eq!(p.mode, SessionMode::Pull);
+                assert_eq!(p.channel_id.as_deref(), Some(channel_id.as_str()));
+                assert_eq!(p.deposit.as_deref(), Some("9000"));
+                assert!(p.token_account.is_none());
+                assert!(p.approved_amount.is_none());
             }
             _ => panic!("Expected Open"),
         }

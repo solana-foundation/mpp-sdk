@@ -15,6 +15,13 @@ export type {
 } from './ChallengeSelection.js';
 export { buildChargeTransaction, charge } from './Charge.js';
 export {
+    buildOpenPaymentChannelTransaction,
+    createPaymentChannelSessionOpener,
+    createServerOpenedPaymentChannelSessionOpener,
+    derivePaymentChannelOpen,
+} from './PaymentChannels.js';
+export type { PaymentChannelOpen, PaymentChannelOpenTransaction } from './PaymentChannels.js';
+export {
     decodeMeteredSseStream,
     MeteredSseSession,
     parseMeteredSseEvent,
@@ -43,6 +50,7 @@ export type {
     SessionChallenge,
     SessionContext,
     SessionMode,
+    SessionPullVoucherStrategy,
     SessionRequest,
     SessionSigner,
     SessionSplit,

@@ -1,6 +1,7 @@
 import { Method, z } from 'mppx';
 
 const sessionMode = z.enum(['push', 'pull']);
+const sessionPullVoucherStrategy = z.enum(['clientVoucher', 'operatedVoucher']);
 
 const signedVoucher = z.object({
     data: z.object({
@@ -129,7 +130,7 @@ export const session = Method.from({
                     /** Client wallet funding the push-mode channel. */
                     payer: z.optional(z.string()),
                     /** PDA salt used for the payment-channel address. */
-                    salt: z.optional(z.number()),
+                    salt: z.optional(z.union([z.string(), z.number()])),
                     /** On-chain transaction signature proving the open. */
                     signature: z.string(),
                     /** SPL token account used as the pull-mode session identifier. */
@@ -182,6 +183,8 @@ export const session = Method.from({
             operator: z.string(),
             /** Payment-channels program ID. */
             programId: z.optional(z.string()),
+            /** Voucher authority for pull-mode sessions. */
+            pullVoucherStrategy: z.optional(sessionPullVoucherStrategy),
             /** Server-provided recent blockhash. */
             recentBlockhash: z.optional(z.string()),
             /** Primary recipient for channel proceeds. */
