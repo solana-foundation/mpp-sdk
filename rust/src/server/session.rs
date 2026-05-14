@@ -29,6 +29,7 @@ use crate::protocol::intents::session::{
     SessionMode, SessionPullVoucherStrategy, SessionRequest, SessionSplit, SignedVoucher,
     TopUpPayload, VoucherPayload,
 };
+use crate::protocol::solana::{default_token_program_for_currency, resolve_stablecoin_mint};
 use crate::store::{ChannelState, ChannelStore, CommittedDelivery, PendingDelivery, StoreError};
 
 // ── Configuration ──
@@ -246,6 +247,93 @@ impl<S: ChannelStore> SessionServer<S> {
             },
             recent_blockhash: None,
         }
+    }
+
+    /// Build and validate payment-channel open parameters from an `open` payload.
+    ///
+    /// This verifies the client-provided payer/payee/mint/salt/deposit/channel
+    /// fields against the session challenge and returns the exact on-chain open
+    /// params expected by the payment-channels program.
+    pub fn payment_channel_open_params(
+        &self,
+        payload: &OpenPayload,
+    ) -> Result<payment_channels::OpenChannelParams> {
+        let payer = parse_payload_pubkey(payload.payer.as_deref(), "payer")?;
+        let payee = parse_payload_pubkey(payload.payee.as_deref(), "payee")?;
+        let mint = parse_payload_pubkey(payload.mint.as_deref(), "mint")?;
+        let authorized_signer = parse_pubkey_field(&payload.authorized_signer, "authorizedSigner")?;
+        let salt = payload
+            .salt
+            .ok_or_else(|| Error::Other("payment-channel open missing salt".to_string()))?;
+        let grace_period = payload
+            .grace_period
+            .ok_or_else(|| Error::Other("payment-channel open missing gracePeriod".to_string()))?;
+        let deposit = payload.deposit_amount()?;
+        let token_program = parse_pubkey_field(
+            default_token_program_for_currency(
+                &self.config.currency,
+                Some(self.config.network.as_str()),
+            ),
+            "token program",
+        )?;
+        let program_id = self
+            .config
+            .program_id
+            .unwrap_or_else(payment_channels::default_program_id);
+        let expected_payee = parse_pubkey_field(&self.config.recipient, "recipient")?;
+        let expected_mint = expected_payment_channel_mint(&self.config)?;
+
+        if payee != expected_payee {
+            return Err(Error::Other(
+                "payment-channel open payee does not match challenge recipient".to_string(),
+            ));
+        }
+        if mint != expected_mint {
+            return Err(Error::Other(
+                "payment-channel open mint does not match challenge currency".to_string(),
+            ));
+        }
+
+        let recipients = self
+            .config
+            .splits
+            .iter()
+            .map(|split| payment_channels::Distribution {
+                recipient: split.recipient,
+                bps: split.bps,
+            })
+            .collect();
+        let params = payment_channels::OpenChannelParams {
+            payer,
+            payee,
+            mint,
+            authorized_signer,
+            salt,
+            deposit,
+            grace_period,
+            recipients,
+            token_program,
+            program_id,
+        };
+
+        let expected_channel = payment_channels::derive_channel_addresses(&params).channel;
+        let channel = parse_payload_pubkey(payload.channel_id.as_deref(), "channelId")?;
+        if channel != expected_channel {
+            return Err(Error::Other(
+                "payment-channel open channelId does not match derived channel PDA".to_string(),
+            ));
+        }
+
+        Ok(params)
+    }
+
+    /// Build the exact payment-channel open instruction expected for a payload.
+    pub fn payment_channel_open_instruction(
+        &self,
+        payload: &OpenPayload,
+    ) -> Result<solana_instruction::Instruction> {
+        let params = self.payment_channel_open_params(payload)?;
+        Ok(payment_channels::build_open_instruction(&params))
     }
 
     /// Process an `open` action: persist the channel state.
@@ -862,7 +950,7 @@ impl<S: ChannelStore> SessionServer<S> {
             .operator
             .as_deref()
             .and_then(|payer| parse_pubkey(payer).ok());
-        let mint = parse_pubkey(&self.config.currency).ok();
+        let mint = expected_payment_channel_mint(&self.config).ok();
         let program_id = self
             .config
             .program_id
@@ -953,6 +1041,22 @@ fn parse_pubkey(s: &str) -> Result<Pubkey> {
         .try_into()
         .map_err(|_| Error::Other(format!("Pubkey {s} is not 32 bytes")))?;
     Ok(Pubkey::from(arr))
+}
+
+fn parse_payload_pubkey(value: Option<&str>, field: &str) -> Result<Pubkey> {
+    let value =
+        value.ok_or_else(|| Error::Other(format!("payment-channel open missing {field}")))?;
+    parse_pubkey_field(value, field)
+}
+
+fn parse_pubkey_field(value: &str, field: &str) -> Result<Pubkey> {
+    parse_pubkey(value).map_err(|e| Error::Other(format!("invalid payment-channel {field}: {e}")))
+}
+
+fn expected_payment_channel_mint(config: &SessionConfig) -> Result<Pubkey> {
+    let mint = resolve_stablecoin_mint(&config.currency, Some(config.network.as_str()))
+        .ok_or_else(|| Error::Other("payment-channel sessions require an SPL token".to_string()))?;
+    parse_pubkey_field(mint, "currency")
 }
 
 /// Verify an Ed25519 voucher signature against the authorized signer.
@@ -1172,6 +1276,87 @@ mod tests {
         let state = server.process_open(&payload).await.unwrap();
         assert_eq!(state.channel_id, "chan1");
         assert_eq!(state.deposit, 1_000_000);
+    }
+
+    #[test]
+    fn payment_channel_open_params_validate_challenge_fields() {
+        use crate::protocol::solana::{mints, programs};
+        use std::str::FromStr;
+
+        let payer = Pubkey::new_unique();
+        let authorized_signer = Pubkey::new_unique();
+        let split_recipient = Pubkey::new_unique();
+        let recipient = Pubkey::from_str(RECIPIENT).expect("valid recipient");
+        let mint = Pubkey::from_str(mints::USDC_MAINNET).expect("valid USDC mint");
+        let token_program = Pubkey::from_str(programs::TOKEN_PROGRAM).expect("valid token program");
+        let server = SessionServer::new(
+            SessionConfig {
+                splits: vec![Split {
+                    recipient: split_recipient,
+                    bps: 10,
+                }],
+                modes: vec![SessionMode::Pull],
+                pull_voucher_strategy: Some(SessionPullVoucherStrategy::ClientVoucher),
+                ..make_server().config
+            },
+            MemoryChannelStore::new(),
+        );
+        let expected = payment_channels::OpenChannelParams {
+            payer,
+            payee: recipient,
+            mint,
+            authorized_signer,
+            salt: 77,
+            deposit: 1_000_000,
+            grace_period: 900,
+            recipients: vec![payment_channels::Distribution {
+                recipient: split_recipient,
+                bps: 10,
+            }],
+            token_program,
+            program_id: payment_channels::default_program_id(),
+        };
+        let channel = payment_channels::derive_channel_addresses(&expected).channel;
+        let payload = OpenPayload::payment_channel_with_mode(
+            SessionMode::Pull,
+            payment_channels::pubkey_string(&channel),
+            expected.deposit.to_string(),
+            payment_channels::pubkey_string(&payer),
+            RECIPIENT.to_string(),
+            mints::USDC_MAINNET.to_string(),
+            expected.salt,
+            expected.grace_period,
+            payment_channels::pubkey_string(&authorized_signer),
+            "pending".to_string(),
+        );
+
+        let params = server.payment_channel_open_params(&payload).unwrap();
+        assert_eq!(params.payer, expected.payer);
+        assert_eq!(params.payee, expected.payee);
+        assert_eq!(params.mint, expected.mint);
+        assert_eq!(params.authorized_signer, expected.authorized_signer);
+        assert_eq!(params.recipients, expected.recipients);
+        assert_eq!(
+            server
+                .payment_channel_open_instruction(&payload)
+                .unwrap()
+                .program_id,
+            payment_channels::to_address(&expected.program_id)
+        );
+
+        let mut wrong_payee = payload.clone();
+        wrong_payee.payee = Some(payment_channels::pubkey_string(&Pubkey::new_unique()));
+        let err = server
+            .payment_channel_open_params(&wrong_payee)
+            .unwrap_err();
+        assert!(err.to_string().contains("payee does not match"));
+
+        let mut wrong_channel = payload;
+        wrong_channel.channel_id = Some(payment_channels::pubkey_string(&Pubkey::new_unique()));
+        let err = server
+            .payment_channel_open_params(&wrong_channel)
+            .unwrap_err();
+        assert!(err.to_string().contains("channelId does not match"));
     }
 
     #[tokio::test]
@@ -1775,6 +1960,10 @@ mod tests {
         let params = server.finalize_params(&chan_str).await.unwrap();
         assert_eq!(params.channel_id, channel);
         assert_eq!(params.settled, 0);
+        assert_eq!(
+            params.mint,
+            Some(expected_payment_channel_mint(&server.config).unwrap())
+        );
         assert!(params.splits.is_empty());
         // Hash with no splits should be deterministic
         let recipient = parse_pubkey(RECIPIENT).unwrap();
