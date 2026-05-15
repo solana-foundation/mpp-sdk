@@ -32,6 +32,7 @@ def pay(mpp_handler: Mpp, amount: str, **options: Any) -> Callable:
         external_id=options.get("external_id", ""),
         expires=options.get("expires", ""),
         fee_payer=options.get("fee_payer", False),
+        splits=options.get("splits", []),
     )
 
     def decorator(handler: Callable) -> Callable:

@@ -52,6 +52,29 @@ class TestPayDecorator:
         assert result is not None
 
     @pytest.mark.asyncio
+    async def test_splits_option_is_included_in_challenge(self, mpp_handler):
+        splits = [
+            {
+                "recipient": "VendorPayoutsWaLLetxxxxxxxxxxxxxxxxxxxxxx1111",
+                "amount": "1000",
+                "memo": "vendor payout",
+            }
+        ]
+
+        @pay(mpp_handler, "10000", splits=splits)
+        async def handler(request, credential, receipt):
+            return {"ok": True}
+
+        class FakeRequest:
+            headers = {}
+            url = "http://localhost/test"
+
+        result = await handler(FakeRequest())
+        request = result["challenge"].decode_request()
+
+        assert request["methodDetails"]["splits"] == splits
+
+    @pytest.mark.asyncio
     async def test_with_invalid_auth_returns_402(self, mpp_handler):
         @pay(mpp_handler, "10000")
         async def handler(request, credential, receipt):
