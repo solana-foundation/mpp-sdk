@@ -147,9 +147,12 @@ class Split:
     amount: str
     label: str = ""
     memo: str = ""
+    ata_creation_required: bool = False
 
     def to_dict(self) -> dict:
         d: dict = {"recipient": self.recipient, "amount": self.amount}
+        if self.ata_creation_required:
+            d["ataCreationRequired"] = self.ata_creation_required
         if self.label:
             d["label"] = self.label
         if self.memo:
@@ -163,6 +166,7 @@ class Split:
             amount=data["amount"],
             label=data.get("label", ""),
             memo=data.get("memo", ""),
+            ata_creation_required=data.get("ataCreationRequired", False),
         )
 
 
