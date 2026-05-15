@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from solana_mpp.protocol.intents import ChargeRequest, parse_units
+from solana_mpp.protocol.intents import ChargeRequest, parse_units, validate_max_amount
 
 
 class TestParseUnits:
@@ -76,3 +76,33 @@ class TestChargeRequest:
         assert "description" not in d
         assert "externalId" not in d
         assert "methodDetails" not in d
+
+
+class TestValidateMaxAmount:
+    def test_allows_amount_below_maximum(self):
+        req = ChargeRequest(amount="1000", currency="USDC")
+
+        validate_max_amount(req, "2000")
+
+    def test_allows_amount_equal_to_maximum(self):
+        req = ChargeRequest(amount="1000", currency="USDC")
+
+        validate_max_amount(req, "1000")
+
+    def test_rejects_amount_above_maximum(self):
+        req = ChargeRequest(amount="1001", currency="USDC")
+
+        with pytest.raises(ValueError, match="amount 1001 exceeds maximum 1000"):
+            validate_max_amount(req, "1000")
+
+    def test_rejects_invalid_amount(self):
+        req = ChargeRequest(amount="not-a-number", currency="USDC")
+
+        with pytest.raises(ValueError, match="invalid amount"):
+            validate_max_amount(req, "1000")
+
+    def test_rejects_invalid_max_amount(self):
+        req = ChargeRequest(amount="1000", currency="USDC")
+
+        with pytest.raises(ValueError, match="invalid max amount"):
+            validate_max_amount(req, "not-a-number")
