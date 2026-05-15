@@ -2,11 +2,11 @@
 //
 // Tests the full payment cycle against any MPP server:
 //
-//	1. GET /health → 200
-//	2. GET /fortune → 402 + WWW-Authenticate
-//	3. Fund test keypair via surfpool
-//	4. Build credential using solana-mpp Go client
-//	5. GET /fortune with Authorization → 200 + fortune
+//  1. GET /health → 200
+//  2. GET /fortune → 402 + WWW-Authenticate
+//  3. Fund test keypair via surfpool
+//  4. Build credential using solana-mpp Go client
+//  5. GET /fortune with Authorization → 200 + fortune
 //
 // Usage: SERVER_URL=http://localhost:3001 RPC_URL=http://localhost:8899 go run .
 package main
@@ -29,7 +29,109 @@ import (
 	"github.com/solana-foundation/mpp-sdk/go/client"
 )
 
+const fixtureSettlementHeader = "x-fixture-settlement"
+
+type adapterResult struct {
+	Type            string            `json:"type"`
+	Implementation  string            `json:"implementation"`
+	Role            string            `json:"role"`
+	OK              bool              `json:"ok"`
+	Status          int               `json:"status"`
+	ResponseHeaders map[string]string `json:"responseHeaders"`
+	ResponseBody    any               `json:"responseBody"`
+	Settlement      string            `json:"settlement,omitempty"`
+}
+
 func main() {
+	if os.Getenv("MPP_INTEROP_TARGET_URL") != "" {
+		if err := runProcessAdapter(os.Stdout); err != nil {
+			fmt.Fprintf(os.Stderr, "FAIL: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
+	runLegacyInterop()
+}
+
+func runProcessAdapter(stdout io.Writer) error {
+	targetURL := os.Getenv("MPP_INTEROP_TARGET_URL")
+	rpcURL := os.Getenv("MPP_INTEROP_RPC_URL")
+	if rpcURL == "" {
+		return fmt.Errorf("MPP_INTEROP_RPC_URL is required")
+	}
+
+	signer, err := readPrivateKeyEnv("MPP_INTEROP_CLIENT_SECRET_KEY")
+	if err != nil {
+		return err
+	}
+
+	httpClient := client.NewClient(signer, rpc.New(rpcURL))
+	resp, err := httpClient.Get(targetURL)
+	if err != nil {
+		return fmt.Errorf("paid request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	rawBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("read response body: %w", err)
+	}
+
+	result := adapterResult{
+		Type:            "result",
+		Implementation:  "go",
+		Role:            "client",
+		OK:              resp.StatusCode >= 200 && resp.StatusCode < 300,
+		Status:          resp.StatusCode,
+		ResponseHeaders: responseHeaders(resp.Header),
+		ResponseBody:    parseResponseBody(rawBody),
+		Settlement:      resp.Header.Get(fixtureSettlementHeader),
+	}
+	return json.NewEncoder(stdout).Encode(result)
+}
+
+func readPrivateKeyEnv(name string) (solana.PrivateKey, error) {
+	raw := os.Getenv(name)
+	if raw == "" {
+		return nil, fmt.Errorf("%s is required", name)
+	}
+	var values []int
+	if err := json.Unmarshal([]byte(raw), &values); err != nil {
+		return nil, fmt.Errorf("parse %s: %w", name, err)
+	}
+	if len(values) != 64 {
+		return nil, fmt.Errorf("%s must contain 64 private key bytes, got %d", name, len(values))
+	}
+	key := make([]byte, len(values))
+	for i, value := range values {
+		if value < 0 || value > 255 {
+			return nil, fmt.Errorf("%s byte %d is outside uint8 range", name, i)
+		}
+		key[i] = byte(value)
+	}
+	return solana.PrivateKey(key), nil
+}
+
+func responseHeaders(headers http.Header) map[string]string {
+	out := make(map[string]string, len(headers))
+	for key, values := range headers {
+		if len(values) == 0 {
+			continue
+		}
+		out[strings.ToLower(key)] = strings.Join(values, ", ")
+	}
+	return out
+}
+
+func parseResponseBody(raw []byte) any {
+	var decoded any
+	if err := json.Unmarshal(raw, &decoded); err == nil {
+		return decoded
+	}
+	return string(raw)
+}
+
+func runLegacyInterop() {
 	serverURL := envOrDefault("SERVER_URL", "http://localhost:3001")
 	fortunePath := envOrDefault("FORTUNE_PATH", "/fortune")
 	rpcURL := envOrDefault("RPC_URL", "http://localhost:8899")

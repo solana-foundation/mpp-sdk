@@ -42,6 +42,13 @@ export const clientImplementations: ImplementationDefinition[] = [
     ],
     enabled: isEnabled("rust", "MPP_INTEROP_CLIENTS", true),
   },
+  {
+    id: "go",
+    label: "Go HTTP client",
+    role: "client",
+    command: ["sh", "-c", "cd go-client && go run ."],
+    enabled: isEnabled("go", "MPP_INTEROP_CLIENTS", false),
+  },
 ];
 
 export const serverImplementations: ImplementationDefinition[] = [
