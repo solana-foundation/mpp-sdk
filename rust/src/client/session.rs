@@ -110,7 +110,14 @@ impl ActiveSession {
 
     /// Sign a voucher adding `amount` to the current cumulative.
     pub async fn sign_increment(&mut self, amount: u64) -> Result<SignedVoucher> {
-        self.sign_voucher(self.cumulative + amount).await
+        let next_cumulative = self.cumulative.checked_add(amount).ok_or_else(|| {
+            Error::Other(format!(
+                "Voucher increment {amount} overflows current watermark {}",
+                self.cumulative
+            ))
+        })?;
+
+        self.sign_voucher(next_cumulative).await
     }
 
     /// Build a `SessionAction::Voucher` wrapping a freshly-signed increment.
@@ -236,6 +243,16 @@ mod tests {
     async fn sign_voucher_zero_rejected() {
         let mut s = make_session();
         assert!(s.sign_voucher(0).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn sign_increment_rejects_overflow() {
+        let mut s = make_session();
+        s.sign_voucher(u64::MAX - 1).await.unwrap();
+
+        let err = s.sign_increment(2).await.unwrap_err();
+        assert!(err.to_string().contains("overflows current watermark"));
+        assert_eq!(s.cumulative, u64::MAX - 1);
     }
 
     #[tokio::test]
