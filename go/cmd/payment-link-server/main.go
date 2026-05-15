@@ -62,8 +62,13 @@ func main() {
 				if err != nil {
 					log.Printf("verify_credential: %v", err)
 				} else {
+					receiptHeader, err := mpp.FormatReceipt(receipt)
+					if err != nil {
+						http.Error(w, err.Error(), http.StatusInternalServerError)
+						return
+					}
 					w.Header().Set("Content-Type", "application/json")
-					w.Header().Set("Payment-Receipt", receipt.Reference)
+					w.Header().Set(mpp.PaymentReceiptHeader, receiptHeader)
 					json.NewEncoder(w).Encode(map[string]string{"fortune": "A smooth long journey!"})
 					return
 				}
