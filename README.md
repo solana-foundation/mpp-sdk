@@ -62,6 +62,8 @@ The interop matrix tests every client against every server. A shared Python test
 | Lua | ![Lua](https://img.shields.io/badge/coverage-41_tests-blue) | `just lua-test` |
 | Interop | ![Interop](https://img.shields.io/badge/interop-20_tests_×_4_servers-brightgreen) | `pytest tests/interop/` |
 
+See [`tests/interop/README.md`](tests/interop/README.md) for the process adapter contract used by the Surfpool-backed client/server matrix.
+
 ## Install
 
 ```bash
