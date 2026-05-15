@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"strings"
 
 	mpp "github.com/solana-foundation/mpp-sdk/go"
 )
@@ -11,6 +12,19 @@ import (
 type contextKey string
 
 const receiptContextKey contextKey = "mpp-receipt"
+
+func markAuthorizationBoundResponse(header http.Header) {
+	header.Set("Cache-Control", "no-store")
+
+	for _, value := range header.Values("Vary") {
+		for _, field := range strings.Split(value, ",") {
+			if strings.EqualFold(strings.TrimSpace(field), "Authorization") || strings.TrimSpace(field) == "*" {
+				return
+			}
+		}
+	}
+	header.Add("Vary", "Authorization")
+}
 
 // ReceiptFromContext extracts the payment receipt from the request context.
 func ReceiptFromContext(ctx context.Context) (mpp.Receipt, bool) {
@@ -63,6 +77,7 @@ func PaymentMiddleware(m *Mpp, chargeFn ChargeFunc) func(http.Handler) http.Hand
 							if fmtErr == nil {
 								w.Header().Set(mpp.PaymentReceiptHeader, receiptHeader)
 							}
+							markAuthorizationBoundResponse(w.Header())
 							ctx := context.WithValue(r.Context(), receiptContextKey, receipt)
 							next.ServeHTTP(w, r.WithContext(ctx))
 							return
@@ -79,6 +94,7 @@ func PaymentMiddleware(m *Mpp, chargeFn ChargeFunc) func(http.Handler) http.Hand
 			}
 
 			w.Header().Set(mpp.WWWAuthenticateHeader, wwwAuth)
+			markAuthorizationBoundResponse(w.Header())
 
 			if m.HTMLEnabled() && AcceptsHTML(r) {
 				html, err := m.ChallengeToHTML(challenge)
