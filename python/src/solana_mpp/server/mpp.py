@@ -19,6 +19,8 @@ from solana_mpp._types import PaymentChallenge, PaymentCredential, Receipt
 from solana_mpp.protocol.intents import ChargeRequest, parse_units
 from solana_mpp.protocol.solana import (
     MEMO_PROGRAM,
+    TOKEN_2022_PROGRAM,
+    TOKEN_PROGRAM,
     CredentialPayload,
     MethodDetails,
     default_rpc_url,
@@ -37,6 +39,7 @@ _SECRET_KEY_ENV_VAR = "MPP_SECRET_KEY"
 _CONSUMED_PREFIX = "solana-charge:consumed:"
 _SYSTEM_PROGRAM = "11111111111111111111111111111111"
 _SYSTEM_TRANSFER_INSTRUCTION = 2
+_TOKEN_TRANSFER_CHECKED_INSTRUCTION = 12
 
 
 def _build_expected_transfers(request: ChargeRequest, details: MethodDetails) -> list[tuple[str, int]]:
@@ -265,8 +268,8 @@ def _extract_recent_blockhash(transaction_b64: str) -> str:
         return str(vtx.message.recent_blockhash)
 
 
-def _decode_legacy_sol_payment_instructions(transaction_b64: str) -> list[dict[str, Any]]:
-    """Decode local SOL transfer and memo instructions from a legacy transaction."""
+def _decode_legacy_payment_instructions(transaction_b64: str) -> list[dict[str, Any]]:
+    """Decode local transfer and memo instructions from a legacy transaction."""
     from solders.transaction import Transaction
 
     raw = base64.b64decode(transaction_b64)
@@ -274,7 +277,7 @@ def _decode_legacy_sol_payment_instructions(transaction_b64: str) -> list[dict[s
         tx = Transaction.from_bytes(raw)
     except Exception as exc:
         raise PaymentError(
-            "unsupported SOL transaction shape for pre-broadcast verification",
+            "unsupported transaction shape for pre-broadcast verification",
             code="invalid-payload-type",
         ) from exc
 
@@ -311,6 +314,33 @@ def _decode_legacy_sol_payment_instructions(transaction_b64: str) -> list[dict[s
                     },
                 }
             )
+        elif program_id in {TOKEN_PROGRAM, TOKEN_2022_PROGRAM}:
+            if len(data) < 10:
+                continue
+            kind = data[0]
+            if kind != _TOKEN_TRANSFER_CHECKED_INSTRUCTION or len(instruction.accounts) < 3:
+                continue
+            try:
+                mint = account_keys[int(instruction.accounts[1])]
+                destination = account_keys[int(instruction.accounts[2])]
+            except IndexError as exc:
+                raise PaymentError(
+                    "transaction token transfer references an unknown account", code="invalid-payload"
+                ) from exc
+            amount = int.from_bytes(data[1:9], "little")
+            instructions.append(
+                {
+                    "programId": program_id,
+                    "parsed": {
+                        "type": "transferChecked",
+                        "info": {
+                            "destination": destination,
+                            "mint": mint,
+                            "tokenAmount": {"amount": str(amount)},
+                        },
+                    },
+                }
+            )
         elif program_id == MEMO_PROGRAM:
             try:
                 memo = data.decode("utf-8")
@@ -327,11 +357,11 @@ def _verify_local_transaction_intent(
     details: MethodDetails,
 ) -> None:
     """Verify locally-decodable payment intent before broadcasting."""
-    if not is_native_sol(request.currency):
-        return
-
-    instructions = _decode_legacy_sol_payment_instructions(transaction_b64)
-    _verify_parsed_sol_transfers(instructions, request, details)
+    instructions = _decode_legacy_payment_instructions(transaction_b64)
+    if is_native_sol(request.currency):
+        _verify_parsed_sol_transfers(instructions, request, details)
+    else:
+        _verify_parsed_spl_transfers(instructions, request, details)
     _verify_parsed_memo_instructions(instructions, request, details)
 
 
