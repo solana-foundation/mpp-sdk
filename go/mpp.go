@@ -47,5 +47,6 @@ var (
 	ParseAuthorization         = core.ParseAuthorization
 	ParseReceipt               = core.ParseReceipt
 	ParseUnits                 = intents.ParseUnits
+	ParseWWWAuthenticateAll    = core.ParseWWWAuthenticateAll
 	ParseWWWAuthenticate       = core.ParseWWWAuthenticate
 )

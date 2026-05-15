@@ -103,6 +103,52 @@ func TestTransport402RetryWithAuthorization(t *testing.T) {
 	}
 }
 
+func TestTransport402RetryWithMergedWWWAuthenticate(t *testing.T) {
+	challenge := newTestChallenge()
+	wwwAuth, err := mpp.FormatWWWAuthenticate(challenge)
+	if err != nil {
+		t.Fatalf("format challenge: %v", err)
+	}
+
+	calls := 0
+	transport := &PaymentTransport{
+		Base: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			calls++
+			if calls == 1 {
+				return &http.Response{
+					StatusCode: http.StatusPaymentRequired,
+					Body:       io.NopCloser(strings.NewReader("payment required")),
+					Header: http.Header{
+						"Www-Authenticate": {`Bearer realm="api"`, wwwAuth},
+					},
+				}, nil
+			}
+			if req.Header.Get(mpp.AuthorizationHeader) == "" {
+				t.Fatal("expected Authorization header on retry")
+			}
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Body:       io.NopCloser(strings.NewReader("paid")),
+				Header:     http.Header{},
+			}, nil
+		}),
+		Signer: testutil.NewPrivateKey(),
+		RPC:    testutil.NewFakeRPC(),
+	}
+
+	req, _ := http.NewRequest("GET", "http://example.com", nil)
+	resp, err := transport.RoundTrip(req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 after retry, got %d", resp.StatusCode)
+	}
+	if calls != 2 {
+		t.Fatalf("expected 2 round trips, got %d", calls)
+	}
+}
+
 func TestTransportInvalidWWWAuthenticateReturnsOriginal402(t *testing.T) {
 	transport := &PaymentTransport{
 		Base: roundTripFunc(func(req *http.Request) (*http.Response, error) {
@@ -210,10 +256,10 @@ func TestTransport402Debug(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse failed: %v", err)
 	}
-	
+
 	fakeRPC := testutil.NewFakeRPC()
 	signer := testutil.NewPrivateKey()
-	
+
 	header, err := BuildCredentialHeader(t.Context(), signer, fakeRPC, parsed)
 	if err != nil {
 		t.Fatalf("BuildCredentialHeader after roundtrip: %v", err)

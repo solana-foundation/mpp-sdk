@@ -213,6 +213,61 @@ func TestExtractPaymentSchemeMultipleSchemes(t *testing.T) {
 	}
 }
 
+func TestParseWWWAuthenticateAllFiltersNonPaymentChallenges(t *testing.T) {
+	header := `Payment id="abc", realm="api", method="solana", intent="charge", request="e30"`
+	challenges := ParseWWWAuthenticateAll([]string{
+		`Bearer realm="api"`,
+		header,
+		`Digest realm="api", qop="auth"`,
+	})
+
+	if len(challenges) != 1 {
+		t.Fatalf("expected 1 challenge, got %d", len(challenges))
+	}
+	if challenges[0].ID != "abc" {
+		t.Fatalf("unexpected challenge ID: %q", challenges[0].ID)
+	}
+}
+
+func TestParseWWWAuthenticateAllMergedPaymentChallenges(t *testing.T) {
+	header := `Payment id="abc", realm="api", method="solana", intent="charge", request="e30", Payment id="def", realm="api", method="solana", intent="charge", request="e30"`
+	challenges := ParseWWWAuthenticateAll([]string{header})
+
+	if len(challenges) != 2 {
+		t.Fatalf("expected 2 challenges, got %d", len(challenges))
+	}
+	if challenges[0].ID != "abc" || challenges[1].ID != "def" {
+		t.Fatalf("unexpected challenge IDs: %#v", challenges)
+	}
+}
+
+func TestParseWWWAuthenticateAllIgnoresPaymentInsideQuotes(t *testing.T) {
+	header := `Payment id="abc", realm="api, Payment realm", method="solana", intent="charge", request="e30", Payment id="def", realm="api", method="solana", intent="charge", request="e30"`
+	challenges := ParseWWWAuthenticateAll([]string{header})
+
+	if len(challenges) != 2 {
+		t.Fatalf("expected 2 challenges, got %d", len(challenges))
+	}
+	if challenges[0].Realm != "api, Payment realm" {
+		t.Fatalf("unexpected realm: %q", challenges[0].Realm)
+	}
+	if challenges[1].ID != "def" {
+		t.Fatalf("unexpected second challenge ID: %q", challenges[1].ID)
+	}
+}
+
+func TestParseWWWAuthenticateAllStopsBeforeTrailingScheme(t *testing.T) {
+	header := `Payment id="abc", realm="api", method="solana", intent="charge", request="e30", Bearer realm="fallback"`
+	challenges := ParseWWWAuthenticateAll([]string{header})
+
+	if len(challenges) != 1 {
+		t.Fatalf("expected 1 challenge, got %d", len(challenges))
+	}
+	if challenges[0].ID != "abc" {
+		t.Fatalf("unexpected challenge ID: %q", challenges[0].ID)
+	}
+}
+
 func TestExtractPaymentSchemeNotPresent(t *testing.T) {
 	if _, ok := ExtractPaymentScheme("Bearer token123"); ok {
 		t.Fatal("expected no Payment scheme")
