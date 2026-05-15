@@ -37,6 +37,17 @@ func constantCharge(amount string) ChargeFunc {
 	}
 }
 
+func hasVaryAuthorization(header http.Header) bool {
+	for _, value := range header.Values("Vary") {
+		for _, field := range strings.Split(value, ",") {
+			if strings.EqualFold(strings.TrimSpace(field), "Authorization") {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func TestMiddlewareNoAuth402(t *testing.T) {
 	m := newMiddlewareTestMpp(t)
 	handler := PaymentMiddleware(m, constantCharge("0.001"))(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -60,6 +71,12 @@ func TestMiddlewareNoAuth402(t *testing.T) {
 	contentType := rr.Header().Get("Content-Type")
 	if !strings.Contains(contentType, "application/json") {
 		t.Fatalf("expected JSON content type, got %q", contentType)
+	}
+	if rr.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("expected no-store cache control, got %q", rr.Header().Get("Cache-Control"))
+	}
+	if !hasVaryAuthorization(rr.Header()) {
+		t.Fatalf("expected Vary: Authorization, got %q", rr.Header().Values("Vary"))
 	}
 }
 
@@ -113,6 +130,12 @@ func TestMiddlewareValidAuth(t *testing.T) {
 	if rr.Header().Get(mpp.PaymentReceiptHeader) == "" {
 		t.Fatal("expected Payment-Receipt response header")
 	}
+	if rr.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("expected no-store cache control, got %q", rr.Header().Get("Cache-Control"))
+	}
+	if !hasVaryAuthorization(rr.Header()) {
+		t.Fatalf("expected Vary: Authorization, got %q", rr.Header().Values("Vary"))
+	}
 }
 
 func TestMiddlewareInvalidCredential402(t *testing.T) {
@@ -131,6 +154,12 @@ func TestMiddlewareInvalidCredential402(t *testing.T) {
 	}
 	if rr.Header().Get(mpp.WWWAuthenticateHeader) == "" {
 		t.Fatal("expected WWW-Authenticate header on re-challenge")
+	}
+	if rr.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("expected no-store cache control, got %q", rr.Header().Get("Cache-Control"))
+	}
+	if !hasVaryAuthorization(rr.Header()) {
+		t.Fatalf("expected Vary: Authorization, got %q", rr.Header().Values("Vary"))
 	}
 }
 
