@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-import logging
 import base64
 import json
+import logging
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -18,8 +18,8 @@ from solana_mpp._errors import (
 from solana_mpp._types import PaymentChallenge, PaymentCredential, Receipt
 from solana_mpp.protocol.intents import ChargeRequest, parse_units
 from solana_mpp.protocol.solana import (
-    CredentialPayload,
     MEMO_PROGRAM,
+    CredentialPayload,
     MethodDetails,
     default_rpc_url,
     default_token_program_for_currency,
@@ -35,6 +35,8 @@ logger = logging.getLogger(__name__)
 _DEFAULT_REALM = "MPP Payment"
 _SECRET_KEY_ENV_VAR = "MPP_SECRET_KEY"
 _CONSUMED_PREFIX = "solana-charge:consumed:"
+_SYSTEM_PROGRAM = "11111111111111111111111111111111"
+_SYSTEM_TRANSFER_INSTRUCTION = 2
 
 
 def _build_expected_transfers(request: ChargeRequest, details: MethodDetails) -> list[tuple[str, int]]:
@@ -263,6 +265,76 @@ def _extract_recent_blockhash(transaction_b64: str) -> str:
         return str(vtx.message.recent_blockhash)
 
 
+def _decode_legacy_sol_payment_instructions(transaction_b64: str) -> list[dict[str, Any]]:
+    """Decode local SOL transfer and memo instructions from a legacy transaction."""
+    from solders.transaction import Transaction
+
+    raw = base64.b64decode(transaction_b64)
+    try:
+        tx = Transaction.from_bytes(raw)
+    except Exception as exc:
+        raise PaymentError(
+            "unsupported SOL transaction shape for pre-broadcast verification",
+            code="invalid-payload-type",
+        ) from exc
+
+    account_keys = [str(key) for key in tx.message.account_keys]
+    instructions: list[dict[str, Any]] = []
+    for instruction in tx.message.instructions:
+        try:
+            program_id = account_keys[int(instruction.program_id_index)]
+        except IndexError as exc:
+            raise PaymentError("transaction instruction references an unknown program", code="invalid-payload") from exc
+        data = bytes(instruction.data)
+        if program_id == _SYSTEM_PROGRAM:
+            if len(data) < 12:
+                continue
+            kind = int.from_bytes(data[:4], "little")
+            if kind != _SYSTEM_TRANSFER_INSTRUCTION or len(instruction.accounts) < 2:
+                continue
+            try:
+                destination = account_keys[int(instruction.accounts[1])]
+            except IndexError as exc:
+                raise PaymentError(
+                    "transaction transfer references an unknown account", code="invalid-payload"
+                ) from exc
+            lamports = int.from_bytes(data[4:12], "little")
+            instructions.append(
+                {
+                    "program": "system",
+                    "parsed": {
+                        "type": "transfer",
+                        "info": {
+                            "destination": destination,
+                            "lamports": str(lamports),
+                        },
+                    },
+                }
+            )
+        elif program_id == MEMO_PROGRAM:
+            try:
+                memo = data.decode("utf-8")
+            except UnicodeDecodeError as exc:
+                raise PaymentError("memo instruction is not valid UTF-8", code="invalid-payload") from exc
+            instructions.append({"programId": MEMO_PROGRAM, "parsed": memo})
+
+    return instructions
+
+
+def _verify_local_transaction_intent(
+    transaction_b64: str,
+    request: ChargeRequest,
+    details: MethodDetails,
+) -> None:
+    """Verify locally-decodable payment intent before broadcasting."""
+    if not is_native_sol(request.currency):
+        return
+
+    instructions = _decode_legacy_sol_payment_instructions(transaction_b64)
+    _verify_parsed_sol_transfers(instructions, request, details)
+    _verify_parsed_memo_instructions(instructions, request, details)
+
+
 @dataclass
 class ChargeOptions:
     """Options for charge challenge generation."""
@@ -472,9 +544,7 @@ class Mpp:
         payload = CredentialPayload.from_dict(credential.payload)
         return request, details, payload
 
-    def _verify_pinned_fields(
-        self, credential: PaymentCredential, request: ChargeRequest
-    ) -> None:
+    def _verify_pinned_fields(self, credential: PaymentCredential, request: ChargeRequest) -> None:
         method_name = "solana"
         if credential.challenge.method != method_name:
             raise PaymentError(
@@ -555,6 +625,7 @@ class Mpp:
                 code="invalid-payload-type",
             ) from exc
         check_network_blockhash(self._network, blockhash_b58)
+        _verify_local_transaction_intent(payload.transaction, request, details)
 
         # Decode and process the transaction
         # In a real implementation, this would use solders to deserialize,
