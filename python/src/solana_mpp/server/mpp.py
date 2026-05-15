@@ -19,6 +19,8 @@ from solana_mpp._types import PaymentChallenge, PaymentCredential, Receipt
 from solana_mpp.protocol.intents import ChargeRequest, parse_units
 from solana_mpp.protocol.solana import (
     MEMO_PROGRAM,
+    TOKEN_2022_PROGRAM,
+    TOKEN_PROGRAM,
     CredentialPayload,
     MethodDetails,
     default_rpc_url,
@@ -37,6 +39,7 @@ _SECRET_KEY_ENV_VAR = "MPP_SECRET_KEY"
 _CONSUMED_PREFIX = "solana-charge:consumed:"
 _SYSTEM_PROGRAM = "11111111111111111111111111111111"
 _SYSTEM_TRANSFER_INSTRUCTION = 2
+_TOKEN_TRANSFER_CHECKED_INSTRUCTION = 12
 
 
 def _build_expected_transfers(request: ChargeRequest, details: MethodDetails) -> list[tuple[str, int]]:
@@ -237,10 +240,7 @@ def _status_ok(response: Any) -> bool:
     value = _rpc_value(response)
     data = _json_like(value)
     if isinstance(data, list):
-        for entry in data:
-            if entry and entry.get("err") is None:
-                return True
-        return False
+        return any(entry and entry.get("err") is None for entry in data)
     return data is not None
 
 
@@ -265,8 +265,11 @@ def _extract_recent_blockhash(transaction_b64: str) -> str:
         return str(vtx.message.recent_blockhash)
 
 
-def _decode_legacy_sol_payment_instructions(transaction_b64: str) -> list[dict[str, Any]]:
-    """Decode local SOL transfer and memo instructions from a legacy transaction."""
+def _decode_legacy_payment_instructions(
+    transaction_b64: str,
+    token_programs: set[str] | None = None,
+) -> list[dict[str, Any]]:
+    """Decode local transfer and memo instructions from a legacy transaction."""
     from solders.transaction import Transaction
 
     raw = base64.b64decode(transaction_b64)
@@ -280,6 +283,7 @@ def _decode_legacy_sol_payment_instructions(transaction_b64: str) -> list[dict[s
 
     account_keys = [str(key) for key in tx.message.account_keys]
     instructions: list[dict[str, Any]] = []
+    token_programs = token_programs or {TOKEN_PROGRAM, TOKEN_2022_PROGRAM}
     for instruction in tx.message.instructions:
         try:
             program_id = account_keys[int(instruction.program_id_index)]
@@ -311,6 +315,30 @@ def _decode_legacy_sol_payment_instructions(transaction_b64: str) -> list[dict[s
                     },
                 }
             )
+        elif program_id in token_programs:
+            if len(data) < 10 or data[0] != _TOKEN_TRANSFER_CHECKED_INSTRUCTION or len(instruction.accounts) < 3:
+                continue
+            try:
+                destination = account_keys[int(instruction.accounts[2])]
+                mint = account_keys[int(instruction.accounts[1])]
+            except IndexError as exc:
+                raise PaymentError(
+                    "transaction token transfer references an unknown account", code="invalid-payload"
+                ) from exc
+            amount = int.from_bytes(data[1:9], "little")
+            instructions.append(
+                {
+                    "programId": program_id,
+                    "parsed": {
+                        "type": "transferChecked",
+                        "info": {
+                            "destination": destination,
+                            "mint": mint,
+                            "tokenAmount": {"amount": str(amount)},
+                        },
+                    },
+                }
+            )
         elif program_id == MEMO_PROGRAM:
             try:
                 memo = data.decode("utf-8")
@@ -327,11 +355,14 @@ def _verify_local_transaction_intent(
     details: MethodDetails,
 ) -> None:
     """Verify locally-decodable payment intent before broadcasting."""
-    if not is_native_sol(request.currency):
-        return
-
-    instructions = _decode_legacy_sol_payment_instructions(transaction_b64)
-    _verify_parsed_sol_transfers(instructions, request, details)
+    token_programs = {TOKEN_PROGRAM, TOKEN_2022_PROGRAM}
+    if details.token_program:
+        token_programs.add(details.token_program)
+    instructions = _decode_legacy_payment_instructions(transaction_b64, token_programs)
+    if is_native_sol(request.currency):
+        _verify_parsed_sol_transfers(instructions, request, details)
+    else:
+        _verify_parsed_spl_transfers(instructions, request, details)
     _verify_parsed_memo_instructions(instructions, request, details)
 
 
@@ -548,7 +579,8 @@ class Mpp:
         method_name = "solana"
         if credential.challenge.method != method_name:
             raise PaymentError(
-                f"credential method '{credential.challenge.method}' does not match this server (expected '{method_name}')",
+                f"credential method '{credential.challenge.method}' does not match this server "
+                f"(expected '{method_name}')",
                 code="challenge-mismatch",
             )
         # IntentName equivalent: case-insensitive "charge" comparison.
@@ -561,7 +593,8 @@ class Mpp:
         # one), so a tampered echoed realm passes HMAC unless re-signed. Pin it.
         if credential.challenge.realm != self._realm:
             raise PaymentError(
-                f"credential realm '{credential.challenge.realm}' does not match this server (expected '{self._realm}')",
+                f"credential realm '{credential.challenge.realm}' does not match this server "
+                f"(expected '{self._realm}')",
                 code="challenge-mismatch",
             )
         if request.currency != self._currency:
