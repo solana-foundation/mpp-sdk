@@ -3,14 +3,18 @@
 from __future__ import annotations
 
 import pytest
+from solders.hash import Hash
+from solders.instruction import Instruction
+from solders.keypair import Keypair
+from solders.message import Message
+from solders.pubkey import Pubkey
+from solders.system_program import TransferParams, transfer
+from solders.transaction import Transaction
 
-import solana_mpp.server.mpp as server_mpp
 from solana_mpp._errors import ChallengeExpiredError, ChallengeMismatchError, PaymentError, ReplayError
 from solana_mpp._types import ChallengeEcho, PaymentCredential
-from solders.pubkey import Pubkey
-
 from solana_mpp.protocol.intents import ChargeRequest
-from solana_mpp.protocol.solana import MEMO_PROGRAM, MethodDetails, Split, TOKEN_2022_PROGRAM
+from solana_mpp.protocol.solana import MEMO_PROGRAM, TOKEN_2022_PROGRAM, MethodDetails, Split
 from solana_mpp.server.mpp import (
     ChargeOptions,
     Config,
@@ -23,10 +27,10 @@ from solana_mpp.server.mpp import (
 TEST_SECRET = "test-secret-key-that-is-long-enough-for-hmac-sha256"
 TEST_RECIPIENT = "11111111111111111111111111111112"
 VALID_SIGNATURE = "1111111111111111111111111111111111111111111111111111111111111111"
-DUMMY_TRANSACTION = "AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=="
 TOKEN_PROGRAM = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
 USDC_DEVNET = "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU"
 ATA_PROGRAM = Pubkey.from_string("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL")
+TEST_BLOCKHASH = "4vJ9JU1bJJQpUgJ8V6hYz7xXKz4F2tN6aBrZEcD3xKhs"
 
 
 def _derive_ata(owner: str, mint: str, token_program: str = TOKEN_PROGRAM) -> str:
@@ -36,6 +40,30 @@ def _derive_ata(owner: str, mint: str, token_program: str = TOKEN_PROGRAM) -> st
     tp_pk = Pubkey.from_string(token_program)
     ata, _ = Pubkey.find_program_address([bytes(owner_pk), bytes(tp_pk), bytes(mint_pk)], ATA_PROGRAM)
     return str(ata)
+
+
+def _build_sol_transaction(recipient: str, lamports: int, memo: str = "") -> str:
+    signer = Keypair()
+    instructions = [
+        transfer(
+            TransferParams(
+                from_pubkey=signer.pubkey(),
+                to_pubkey=Pubkey.from_string(recipient),
+                lamports=lamports,
+            )
+        )
+    ]
+    if memo:
+        instructions.append(Instruction(Pubkey.from_string(MEMO_PROGRAM), memo.encode("utf-8"), []))
+
+    blockhash = Hash.from_string(TEST_BLOCKHASH)
+    message = Message.new_with_blockhash(instructions, signer.pubkey(), blockhash)
+    transaction = Transaction.new_unsigned(message)
+    transaction.sign([signer], blockhash)
+
+    import base64
+
+    return base64.b64encode(bytes(transaction)).decode("ascii")
 
 
 class FakeResponse:
@@ -348,7 +376,7 @@ class TestVerifyCredential:
         assert receipt.is_success()
         assert receipt.external_id == "order-123"
 
-    async def test_transaction_verification_broadcasts_and_checks_transaction(self, monkeypatch: pytest.MonkeyPatch):
+    async def test_transaction_verification_broadcasts_and_checks_transaction(self):
         tx = {
             "meta": {"err": None},
             "transaction": {
@@ -374,16 +402,11 @@ class TestVerifyCredential:
             )
         )
         challenge = mpp.charge_with_options("0.000001", ChargeOptions())
-        monkeypatch.setattr(
-            server_mpp,
-            "_extract_recent_blockhash",
-            lambda _tx: "4vJ9JU1bJJQpUgJ8V6hYz7xXKz4F2tN6aBrZEcD3xKhs",
-        )
         credential = PaymentCredential(
             challenge=challenge.to_echo(),
             payload={
                 "type": "transaction",
-                "transaction": DUMMY_TRANSACTION,
+                "transaction": _build_sol_transaction(TEST_RECIPIENT, 1000),
             },
         )
 
@@ -391,6 +414,84 @@ class TestVerifyCredential:
         assert receipt.is_success()
         assert receipt.reference == "1111111111111111111111111111111111111111111111111111111111111111"
         assert rpc.sent
+
+    async def test_transaction_verification_rejects_wrong_recipient_before_broadcast(self):
+        tx = {"meta": {"err": None}, "transaction": {"message": {"instructions": []}}}
+        rpc = FakeRPC(tx=tx, send_value="1111111111111111111111111111111111111111111111111111111111111111")
+        mpp = Mpp(
+            Config(
+                recipient=TEST_RECIPIENT,
+                currency="SOL",
+                decimals=9,
+                network="mainnet-beta",
+                secret_key=TEST_SECRET,
+                rpc=rpc,
+            )
+        )
+        challenge = mpp.charge_with_options("0.000001", ChargeOptions())
+        credential = PaymentCredential(
+            challenge=challenge.to_echo(),
+            payload={
+                "type": "transaction",
+                "transaction": _build_sol_transaction(str(Pubkey.new_unique()), 1000),
+            },
+        )
+
+        with pytest.raises(PaymentError, match="no matching SOL transfer"):
+            await mpp.verify_credential(credential)
+        assert rpc.sent == []
+
+    async def test_transaction_verification_rejects_wrong_amount_before_broadcast(self):
+        tx = {"meta": {"err": None}, "transaction": {"message": {"instructions": []}}}
+        rpc = FakeRPC(tx=tx, send_value="1111111111111111111111111111111111111111111111111111111111111111")
+        mpp = Mpp(
+            Config(
+                recipient=TEST_RECIPIENT,
+                currency="SOL",
+                decimals=9,
+                network="mainnet-beta",
+                secret_key=TEST_SECRET,
+                rpc=rpc,
+            )
+        )
+        challenge = mpp.charge_with_options("0.000001", ChargeOptions())
+        credential = PaymentCredential(
+            challenge=challenge.to_echo(),
+            payload={
+                "type": "transaction",
+                "transaction": _build_sol_transaction(TEST_RECIPIENT, 999),
+            },
+        )
+
+        with pytest.raises(PaymentError, match="no matching SOL transfer"):
+            await mpp.verify_credential(credential)
+        assert rpc.sent == []
+
+    async def test_transaction_verification_rejects_missing_memo_before_broadcast(self):
+        tx = {"meta": {"err": None}, "transaction": {"message": {"instructions": []}}}
+        rpc = FakeRPC(tx=tx, send_value="1111111111111111111111111111111111111111111111111111111111111111")
+        mpp = Mpp(
+            Config(
+                recipient=TEST_RECIPIENT,
+                currency="SOL",
+                decimals=9,
+                network="mainnet-beta",
+                secret_key=TEST_SECRET,
+                rpc=rpc,
+            )
+        )
+        challenge = mpp.charge_with_options("0.000001", ChargeOptions(external_id="order-123"))
+        credential = PaymentCredential(
+            challenge=challenge.to_echo(),
+            payload={
+                "type": "transaction",
+                "transaction": _build_sol_transaction(TEST_RECIPIENT, 1000),
+            },
+        )
+
+        with pytest.raises(PaymentError, match="No memo instruction found"):
+            await mpp.verify_credential(credential)
+        assert rpc.sent == []
 
 
 class TestParsedTransferVerification:
