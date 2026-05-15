@@ -78,3 +78,19 @@ def parse_units(amount: str, decimals: int) -> str:
         raise ValueError(f"invalid amount: {amount}") from exc
 
     return str(val)
+
+
+def validate_max_amount(request: ChargeRequest, max_amount: str) -> None:
+    """Validate that a charge request does not exceed a max base-unit amount."""
+    try:
+        actual = int(request.amount)
+    except ValueError as exc:
+        raise ValueError(f"invalid amount: {request.amount}") from exc
+
+    try:
+        maximum = int(max_amount)
+    except ValueError as exc:
+        raise ValueError(f"invalid max amount: {max_amount}") from exc
+
+    if actual > maximum:
+        raise ValueError(f"amount {actual} exceeds maximum {maximum}")
