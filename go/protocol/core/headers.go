@@ -61,6 +61,22 @@ func ParseWWWAuthenticate(header string) (PaymentChallenge, error) {
 	return challenge, nil
 }
 
+// ParseWWWAuthenticateAll parses successfully decoded Payment challenges from
+// WWW-Authenticate header values, including merged values that also contain
+// non-Payment schemes.
+func ParseWWWAuthenticateAll(headers []string) []PaymentChallenge {
+	challenges := make([]PaymentChallenge, 0, len(headers))
+	for _, header := range headers {
+		for _, value := range splitPaymentChallengeValues(header) {
+			challenge, err := ParseWWWAuthenticate(value)
+			if err == nil {
+				challenges = append(challenges, challenge)
+			}
+		}
+	}
+	return challenges
+}
+
 // FormatWWWAuthenticate formats a challenge into a header value.
 func FormatWWWAuthenticate(challenge PaymentChallenge) (string, error) {
 	parts := []string{
@@ -149,6 +165,122 @@ func ExtractPaymentScheme(header string) (string, bool) {
 		}
 	}
 	return "", false
+}
+
+func splitPaymentChallengeValues(header string) []string {
+	starts := []int{}
+	inQuote := false
+	escaped := false
+	for i := 0; i < len(header); i++ {
+		if inQuote {
+			if escaped {
+				escaped = false
+				continue
+			}
+			switch header[i] {
+			case '\\':
+				escaped = true
+			case '"':
+				inQuote = false
+			}
+			continue
+		}
+		if header[i] == '"' {
+			inQuote = true
+			continue
+		}
+		if isPaymentSchemeStart(header, i) {
+			starts = append(starts, i)
+			i += len(PaymentScheme) - 1
+		}
+	}
+
+	values := make([]string, 0, len(starts))
+	for i, start := range starts {
+		end := len(header)
+		if i+1 < len(starts) {
+			end = starts[i+1]
+		} else if next := nextAuthSchemeStart(header, start+len(PaymentScheme)); next != -1 {
+			end = next
+		}
+		value := strings.TrimSpace(strings.TrimRight(strings.TrimSpace(header[start:end]), ","))
+		if value != "" {
+			values = append(values, value)
+		}
+	}
+	return values
+}
+
+func nextAuthSchemeStart(header string, index int) int {
+	inQuote := false
+	escaped := false
+	for i := index; i < len(header); i++ {
+		if inQuote {
+			if escaped {
+				escaped = false
+				continue
+			}
+			switch header[i] {
+			case '\\':
+				escaped = true
+			case '"':
+				inQuote = false
+			}
+			continue
+		}
+		if header[i] == '"' {
+			inQuote = true
+			continue
+		}
+		if header[i] != ',' {
+			continue
+		}
+		next := i + 1
+		for next < len(header) && (header[next] == ' ' || header[next] == '\t') {
+			next++
+		}
+		if isAuthSchemeStart(header, next) {
+			return next
+		}
+	}
+	return -1
+}
+
+func isAuthSchemeStart(header string, index int) bool {
+	if index >= len(header) {
+		return false
+	}
+	tokenEnd := index
+	for tokenEnd < len(header) {
+		ch := header[tokenEnd]
+		if ch == ' ' || ch == '\t' || ch == ',' || ch == '=' {
+			break
+		}
+		tokenEnd++
+	}
+	if tokenEnd == index || tokenEnd >= len(header) {
+		return false
+	}
+	return header[tokenEnd] == ' ' || header[tokenEnd] == '\t'
+}
+
+func isPaymentSchemeStart(header string, index int) bool {
+	end := index + len(PaymentScheme)
+	if end >= len(header) {
+		return false
+	}
+	if !strings.EqualFold(header[index:end], PaymentScheme) {
+		return false
+	}
+	if header[end] != ' ' && header[end] != '\t' {
+		return false
+	}
+
+	previous := index
+	for previous > 0 && (header[previous-1] == ' ' || header[previous-1] == '\t') {
+		previous--
+	}
+	return previous == 0 || header[previous-1] == ','
 }
 
 func stripPaymentScheme(header string) (string, bool) {

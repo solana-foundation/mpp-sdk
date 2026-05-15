@@ -58,15 +58,12 @@ func (t *PaymentTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 		return resp, nil
 	}
 
-	wwwAuth := resp.Header.Get(mpp.WWWAuthenticateHeader)
-	if wwwAuth == "" {
+	challenges := mpp.ParseWWWAuthenticateAll(resp.Header.Values(mpp.WWWAuthenticateHeader))
+	if len(challenges) == 0 {
 		return resp, nil
 	}
 
-	challenge, err := mpp.ParseWWWAuthenticate(wwwAuth)
-	if err != nil {
-		return resp, nil
-	}
+	challenge := challenges[0]
 
 	ctx := req.Context()
 	if ctx == nil {
