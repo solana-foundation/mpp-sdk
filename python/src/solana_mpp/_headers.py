@@ -7,6 +7,7 @@ Rust and Go implementations.
 from __future__ import annotations
 
 import json
+from collections.abc import Iterable
 from typing import Any
 
 from solana_mpp._base64url import decode, decode_json, encode_json
@@ -71,6 +72,18 @@ def parse_www_authenticate(header: str) -> PaymentChallenge:
         digest=params.get("digest", ""),
         opaque=params.get("opaque"),
     )
+
+
+def parse_www_authenticate_all(headers: Iterable[str]) -> list[PaymentChallenge]:
+    """Parse all Payment challenges from one or more WWW-Authenticate values."""
+    challenges: list[PaymentChallenge] = []
+    for header in headers:
+        for challenge in _extract_challenges(header, PAYMENT_SCHEME):
+            try:
+                challenges.append(parse_www_authenticate(challenge))
+            except ParseError:
+                continue
+    return challenges
 
 
 def format_www_authenticate(challenge: PaymentChallenge) -> str:
@@ -227,11 +240,73 @@ def _strip_payment_scheme(header: str) -> str | None:
 
 def _extract_payment_scheme(header: str) -> str | None:
     """Extract the Payment scheme section from a comma-separated header."""
-    for part in header.split(","):
-        part = part.strip()
-        if len(part) >= 8 and part[:8].lower() == "payment ":
-            return part
+    for part in _extract_challenges(header, PAYMENT_SCHEME):
+        return part
     return None
+
+
+def _extract_challenges(header: str, scheme: str) -> list[str]:
+    """Extract scheme challenges from a WWW-Authenticate header value."""
+    all_starts = _find_challenge_starts(header)
+    selected_starts = [start for start in all_starts if _scheme_starts_at(header, start, scheme)]
+    challenges: list[str] = []
+    for start in selected_starts:
+        following_starts = [candidate for candidate in all_starts if candidate > start]
+        end = following_starts[0] if following_starts else len(header)
+        challenge = header[start:end].strip()
+        if challenge.endswith(","):
+            challenge = challenge[:-1].rstrip()
+        if challenge:
+            challenges.append(challenge)
+    return challenges
+
+
+def _find_challenge_starts(header: str) -> list[int]:
+    starts: list[int] = []
+    in_quote = False
+    escaped = False
+    i = 0
+    while i < len(header):
+        char = header[i]
+        if escaped:
+            escaped = False
+            i += 1
+            continue
+        if char == "\\" and in_quote:
+            escaped = True
+            i += 1
+            continue
+        if char == '"':
+            in_quote = not in_quote
+            i += 1
+            continue
+        if not in_quote and _auth_scheme_starts_at(header, i):
+            starts.append(i)
+            while i < len(header) and header[i] not in (" ", "\t"):
+                i += 1
+            continue
+        i += 1
+    return starts
+
+
+def _scheme_starts_at(header: str, index: int, scheme: str) -> bool:
+    return header[index : index + len(scheme)].lower() == scheme.lower() and _auth_scheme_starts_at(header, index)
+
+
+def _auth_scheme_starts_at(header: str, index: int) -> bool:
+    if index >= len(header) or not header[index].isalpha():
+        return False
+    next_index = index
+    while next_index < len(header) and header[next_index].isalpha():
+        next_index += 1
+    if next_index == index or next_index >= len(header) or header[next_index] not in (" ", "\t"):
+        return False
+    if index == 0:
+        return True
+    previous = index - 1
+    while previous >= 0 and header[previous] in (" ", "\t"):
+        previous -= 1
+    return previous >= 0 and header[previous] == ","
 
 
 def _escape_quoted_value(s: str) -> str:

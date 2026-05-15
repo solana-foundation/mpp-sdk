@@ -18,8 +18,10 @@ class MockTransport(httpx.AsyncBaseTransport):
     def __init__(self, responses: list[httpx.Response]) -> None:
         self._responses = list(responses)
         self._call_count = 0
+        self.requests: list[httpx.Request] = []
 
     async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        self.requests.append(request)
         idx = min(self._call_count, len(self._responses) - 1)
         self._call_count += 1
         return self._responses[idx]
@@ -103,6 +105,36 @@ class TestPaymentTransport:
         )
         result = await transport.handle_async_request(httpx.Request("GET", "https://example.com"))
         assert result.status_code == 402
+
+    async def test_402_with_combined_www_authenticate_payment_challenge(self, monkeypatch):
+        """Combined WWW-Authenticate values should still find Payment challenges."""
+        challenge = self._make_challenge()
+        www_auth = f'Bearer realm="test", {format_www_authenticate(challenge)}'
+
+        first_response = httpx.Response(402, headers={"www-authenticate": www_auth})
+        second_response = httpx.Response(200, text="Paid content")
+        inner = MockTransport([first_response, second_response])
+
+        async def fake_build_credential_header(**kwargs):
+            assert kwargs["challenge"].id == challenge.id
+            return "Payment credential"
+
+        monkeypatch.setattr(
+            "solana_mpp.client.transport.build_credential_header",
+            fake_build_credential_header,
+        )
+
+        transport = PaymentTransport(
+            signer=MagicMock(),
+            rpc_client=MagicMock(),
+            base_transport=inner,
+        )
+
+        result = await transport.handle_async_request(httpx.Request("GET", "https://example.com"))
+
+        assert result.status_code == 200
+        assert len(inner.requests) == 2
+        assert inner.requests[1].headers["authorization"] == "Payment credential"
 
     async def test_aclose(self):
         """aclose should close the inner transport."""

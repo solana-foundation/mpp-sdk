@@ -7,7 +7,7 @@ from typing import Any
 
 import httpx
 
-from solana_mpp._headers import ParseError, parse_www_authenticate
+from solana_mpp._headers import parse_www_authenticate_all
 from solana_mpp.client.charge import build_credential_header
 
 logger = logging.getLogger(__name__)
@@ -54,15 +54,8 @@ class PaymentTransport(httpx.AsyncBaseTransport):
         # Look for WWW-Authenticate: Payment header
         www_auth_headers = response.headers.get_list("www-authenticate")
 
-        challenge = None
-        for header in www_auth_headers:
-            if not header.lower().startswith("payment "):
-                continue
-            try:
-                challenge = parse_www_authenticate(header)
-                break
-            except ParseError:
-                continue
+        challenges = parse_www_authenticate_all(www_auth_headers)
+        challenge = challenges[0] if challenges else None
 
         if challenge is None:
             return response
