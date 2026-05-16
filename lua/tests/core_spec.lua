@@ -21,6 +21,24 @@ t.test('www-authenticate round trip', function()
   t.assert_equal(parsed.request:raw(), challenge.request:raw())
 end)
 
+t.test('www-authenticate rejects malformed auth params', function()
+  local request = mpp.NewBase64URLJSONValue({ amount = '1000', currency = 'sol' })
+  local challenge = mpp.NewChallengeWithSecret('secret', 'realm', mpp.NewMethodName('solana'), mpp.NewIntentName('charge'), request)
+  local header = mpp.FormatWWWAuthenticate(challenge)
+
+  t.assert_error(function()
+    mpp.ParseWWWAuthenticate((header:gsub(', realm=', ' realm=', 1)))
+  end, 'separator')
+
+  t.assert_error(function()
+    mpp.ParseWWWAuthenticate(header .. ' trailing')
+  end, 'separator')
+
+  t.assert_error(function()
+    mpp.ParseWWWAuthenticate(header .. ', opaque="unterminated')
+  end, 'unterminated')
+end)
+
 t.test('authorization round trip', function()
   local request = mpp.NewBase64URLJSONValue({ amount = '1000' })
   local challenge = mpp.NewChallengeWithSecret('secret', 'realm', mpp.NewMethodName('solana'), mpp.NewIntentName('charge'), request)
