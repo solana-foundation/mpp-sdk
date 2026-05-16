@@ -74,6 +74,16 @@ class TestWWWAuthenticate:
         with pytest.raises(ParseError, match="Duplicate"):
             parse_www_authenticate(header)
 
+    def test_rejects_malformed_auth_params(self):
+        valid = 'Payment id="x", realm="api", method="solana", intent="charge", request="e30"'
+        missing_separator = valid.replace(', realm="api"', ' realm="api"')
+        trailing_junk = f"{valid} not-a-param"
+        unterminated_quote = valid.replace('realm="api"', 'realm="api')
+
+        for header in (missing_separator, trailing_junk, unterminated_quote):
+            with pytest.raises(ParseError, match="Malformed authentication parameters"):
+                parse_www_authenticate(header)
+
     def test_tab_after_scheme(self):
         header = 'Payment\tid="x", realm="api", method="solana", intent="charge", request="e30"'
         parsed = parse_www_authenticate(header)
