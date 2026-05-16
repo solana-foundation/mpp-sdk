@@ -284,36 +284,60 @@ fn parse_auth_params(params_str: &str) -> Result<HashMap<String, String>, Error>
     let mut params = HashMap::new();
     let chars: Vec<char> = params_str.chars().collect();
     let mut i = 0;
+    let mut first = true;
 
     while i < chars.len() {
-        while i < chars.len() && (chars[i].is_whitespace() || chars[i] == ',') {
+        while i < chars.len() && chars[i].is_whitespace() {
             i += 1;
         }
         if i >= chars.len() {
             break;
+        }
+
+        if !first {
+            if chars[i] != ',' {
+                return Err(Error::Other("Invalid auth parameter separator".into()));
+            }
+            i += 1;
+            while i < chars.len() && chars[i].is_whitespace() {
+                i += 1;
+            }
+            if i >= chars.len() {
+                return Err(Error::Other("Invalid auth parameter".into()));
+            }
+        } else if chars[i] == ',' {
+            return Err(Error::Other("Invalid auth parameter".into()));
         }
 
         let key_start = i;
-        while i < chars.len() && chars[i] != '=' && !chars[i].is_whitespace() {
+        while i < chars.len() && chars[i] != '=' && chars[i] != ',' && !chars[i].is_whitespace() {
             i += 1;
         }
-        if i >= chars.len() || chars[i] != '=' {
-            while i < chars.len() && !chars[i].is_whitespace() && chars[i] != ',' {
-                i += 1;
-            }
-            continue;
+        if key_start == i {
+            return Err(Error::Other("Invalid auth parameter".into()));
         }
 
         let key: String = chars[key_start..i].iter().collect();
+        while i < chars.len() && chars[i].is_whitespace() {
+            i += 1;
+        }
+        if i >= chars.len() || chars[i] != '=' {
+            return Err(Error::Other("Invalid auth parameter".into()));
+        }
+
         i += 1;
+        while i < chars.len() && chars[i].is_whitespace() {
+            i += 1;
+        }
 
         if i >= chars.len() {
-            break;
+            return Err(Error::Other("Invalid auth parameter".into()));
         }
 
         let value = if chars[i] == '"' {
             i += 1;
             let mut value = String::new();
+            let mut closed = false;
             while i < chars.len() && chars[i] != '"' {
                 if chars[i] == '\\' && i + 1 < chars.len() {
                     i += 1;
@@ -324,13 +348,20 @@ fn parse_auth_params(params_str: &str) -> Result<HashMap<String, String>, Error>
                 i += 1;
             }
             if i < chars.len() {
+                closed = true;
                 i += 1;
+            }
+            if !closed {
+                return Err(Error::Other("Unterminated quoted value".into()));
             }
             value
         } else {
             let value_start = i;
             while i < chars.len() && !chars[i].is_whitespace() && chars[i] != ',' {
                 i += 1;
+            }
+            if value_start == i {
+                return Err(Error::Other("Invalid auth parameter".into()));
             }
             chars[value_start..i].iter().collect()
         };
@@ -339,6 +370,7 @@ fn parse_auth_params(params_str: &str) -> Result<HashMap<String, String>, Error>
             return Err(Error::Other(format!("Duplicate parameter: {key}")));
         }
         params.insert(key, value);
+        first = false;
     }
 
     Ok(params)
@@ -724,10 +756,27 @@ mod tests {
     }
 
     #[test]
-    fn parse_params_key_without_value_skipped() {
-        // "badkey" has no = sign, should be skipped
+    fn parse_params_rejects_key_without_value() {
         let header = r#"Payment id="x", badkey, realm="api", method="solana", intent="charge", request="e30""#;
-        let parsed = parse_www_authenticate(header).unwrap();
-        assert_eq!(parsed.id, "x");
+        assert!(parse_www_authenticate(header).is_err());
+    }
+
+    #[test]
+    fn parse_params_rejects_missing_separator() {
+        let header =
+            r#"Payment id="x" realm="api", method="solana", intent="charge", request="e30""#;
+        assert!(parse_www_authenticate(header).is_err());
+    }
+
+    #[test]
+    fn parse_params_rejects_trailing_junk() {
+        let header = r#"Payment id="x", realm="api", method="solana", intent="charge", request="e30" trailing"#;
+        assert!(parse_www_authenticate(header).is_err());
+    }
+
+    #[test]
+    fn parse_params_rejects_unterminated_quoted_value() {
+        let header = r#"Payment id="x", realm="api", method="solana", intent="charge", request="e30", opaque="unterminated"#;
+        assert!(parse_www_authenticate(header).is_err());
     }
 }
