@@ -99,4 +99,21 @@ pnpm install --frozen-lockfile
 pnpm test
 ```
 
+If the TypeScript adapter cannot resolve `@solana/mpp/client` or
+`@solana/mpp/server`, rebuild the local package and refresh the interop package
+install:
+
+```bash
+cd ../../typescript
+pnpm --filter @solana/mpp build
+
+cd ../tests/interop
+pnpm install --force --frozen-lockfile
+pnpm test
+```
+
+`@solana/mpp` is installed from a local `file:` dependency, so
+`tests/interop` needs to install after the TypeScript package has produced its
+`dist` files.
+
 The harness starts Surfpool through `start-surfnet-proxy.mjs`, funds the test accounts, starts each enabled server adapter, runs each enabled client adapter against it, and verifies the recipient balance delta.
