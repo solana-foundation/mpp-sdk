@@ -13,6 +13,7 @@ from solana_mpp._headers import (
     parse_authorization,
     parse_receipt,
     parse_www_authenticate,
+    parse_www_authenticate_all,
 )
 from solana_mpp._types import ChallengeEcho, PaymentChallenge, PaymentCredential, Receipt
 
@@ -132,6 +133,58 @@ class TestWWWAuthenticate:
         parsed = parse_www_authenticate(header)
         assert parsed.id == r"id\with\backslash"
 
+    def test_parse_all_extracts_payment_from_combined_header(self):
+        challenge = PaymentChallenge(
+            id="payment-id",
+            realm="api",
+            method="solana",
+            intent="charge",
+            request=encode_json({"amount": "10000", "currency": "USDC"}),
+        )
+        header = f'Bearer realm="api", {format_www_authenticate(challenge)}'
+
+        parsed = parse_www_authenticate_all([header])
+
+        assert [c.id for c in parsed] == ["payment-id"]
+
+    def test_parse_all_handles_multiple_payment_challenges(self):
+        first = PaymentChallenge(
+            id="first",
+            realm="api",
+            method="solana",
+            intent="charge",
+            request=encode_json({"amount": "1", "description": "one, with comma"}),
+        )
+        second = PaymentChallenge(
+            id="second",
+            realm="api",
+            method="solana",
+            intent="charge",
+            request=encode_json({"amount": "2"}),
+        )
+        header = f"{format_www_authenticate(first)}, {format_www_authenticate(second)}"
+
+        parsed = parse_www_authenticate_all([header])
+
+        assert [c.id for c in parsed] == ["first", "second"]
+
+    def test_parse_all_skips_invalid_payment_challenges(self):
+        valid = PaymentChallenge(
+            id="valid",
+            realm="api",
+            method="solana",
+            intent="charge",
+            request=encode_json({"amount": "10000", "currency": "USDC"}),
+        )
+        header = (
+            'Payment id="", realm="api", method="solana", intent="charge", request="e30", '
+            f"{format_www_authenticate(valid)}"
+        )
+
+        parsed = parse_www_authenticate_all([header])
+
+        assert [c.id for c in parsed] == ["valid"]
+
 
 class TestAuthorization:
     def test_roundtrip(self):
@@ -181,6 +234,15 @@ class TestAuthorization:
         header = format_authorization(credential)
         # Prefix with another scheme
         multi = f"Bearer xyz123, {header}"
+        parsed = parse_authorization(multi)
+        assert parsed.challenge.id == "test"
+
+    def test_extract_from_multi_scheme_before_and_after_payment(self):
+        """Should not include later schemes in the Payment token."""
+        echo = ChallengeEcho(id="test", realm="api", method="solana", intent="charge", request="e30")
+        credential = PaymentCredential(challenge=echo, payload={"type": "transaction"})
+        header = format_authorization(credential)
+        multi = f'Bearer xyz123, {header}, Basic realm="fallback"'
         parsed = parse_authorization(multi)
         assert parsed.challenge.id == "test"
 
