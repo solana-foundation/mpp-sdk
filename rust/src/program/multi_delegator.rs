@@ -71,8 +71,8 @@ impl std::fmt::Display for MissingPayloadReason {
     }
 }
 
-/// The on-chain setup action the operator must perform before enqueueing the
-/// Fiber channel open.
+/// The on-chain setup action the operator must perform before accepting a
+/// pull-mode session.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MultiDelegateSetupAction {
     /// Existing delegation already covers the session cap — no on-chain action

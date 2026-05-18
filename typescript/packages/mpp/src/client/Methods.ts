@@ -1,5 +1,6 @@
 import { selectSolanaChargeChallenge } from './ChallengeSelection.js';
 import { buildChargeTransaction, charge as charge_ } from './Charge.js';
+import { session as session_ } from './Session.js';
 
 /**
  * Creates a Solana `charge` method for usage on the client.
@@ -22,12 +23,15 @@ export const solana: {
     buildChargeTransaction: typeof buildChargeTransaction;
     charge: typeof charge_;
     selectChargeChallenge: typeof selectSolanaChargeChallenge;
+    session: typeof session_;
 } = Object.assign((parameters: solana.Parameters) => charge_(parameters), {
     buildChargeTransaction,
     charge: charge_,
     selectChargeChallenge: selectSolanaChargeChallenge,
+    session: session_,
 });
 
 export declare namespace solana {
     type Parameters = charge_.Parameters;
+    type SessionParameters = session_.Parameters;
 }

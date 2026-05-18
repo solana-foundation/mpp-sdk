@@ -5,8 +5,10 @@ pub mod session;
 
 pub use charge::ChargeRequest;
 pub use session::{
-    ClosePayload, OpenPayload, SessionAction, SessionMode, SessionRequest, SessionSplit,
-    SignedVoucher, TopUpPayload, VoucherData, VoucherPayload,
+    ClosePayload, CommitPayload, CommitReceipt, CommitStatus, MeteredEnvelope, MeteringDirective,
+    MeteringUsage, OpenPayload, SessionAction, SessionMode, SessionPullVoucherStrategy,
+    SessionRequest, SessionSplit, SignedVoucher, TopUpPayload, VoucherData, VoucherPayload,
+    DEFAULT_SESSION_EXPIRES_AT,
 };
 
 /// Convert a human-readable amount to base units.

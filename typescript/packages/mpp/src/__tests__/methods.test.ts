@@ -4,7 +4,7 @@
  * Validates that `charge` method definition has the expected
  * structure, intent, name, and schema shape.
  */
-import { charge } from '../Methods.js';
+import { charge, session } from '../Methods.js';
 
 describe('charge method definition', () => {
     test('has correct intent and name', () => {
@@ -17,5 +17,19 @@ describe('charge method definition', () => {
         expect(charge.schema.request).toBeDefined();
         expect(charge.schema.credential).toBeDefined();
         expect(charge.schema.credential.payload).toBeDefined();
+    });
+});
+
+describe('session method definition', () => {
+    test('has correct intent and name', () => {
+        expect(session.intent).toBe('session');
+        expect(session.name).toBe('solana');
+    });
+
+    test('has request and credential schemas', () => {
+        expect(session.schema).toBeDefined();
+        expect(session.schema.request).toBeDefined();
+        expect(session.schema.credential).toBeDefined();
+        expect(session.schema.credential.payload).toBeDefined();
     });
 });

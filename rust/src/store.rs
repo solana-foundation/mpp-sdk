@@ -128,10 +128,30 @@ impl Store for MemoryStore {
 
 /// Persisted state of a payment channel, managed by the server.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct PendingDelivery {
+    #[serde(rename = "deliveryId")]
+    pub delivery_id: String,
+    pub amount: u64,
+    pub sequence: u64,
+    #[serde(rename = "expiresAt")]
+    pub expires_at: i64,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct CommittedDelivery {
+    #[serde(rename = "deliveryId")]
+    pub delivery_id: String,
+    pub amount: u64,
+    pub cumulative: u64,
+    #[serde(rename = "voucherSignature")]
+    pub voucher_signature: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ChannelState {
     /// On-chain channel address (base58).
     ///
-    /// - Push sessions: Fiber channel address.
+    /// - Push sessions: payment-channel address.
     /// - Pull sessions: FixedDelegation PDA address.
     pub channel_id: String,
 
@@ -151,6 +171,10 @@ pub struct ChannelState {
     /// Stored for idempotent replay detection.
     pub highest_voucher_signature: Option<String>,
 
+    /// Expiry timestamp from the highest accepted voucher.
+    /// Needed when the server later settles that voucher on-chain.
+    pub highest_voucher_expires_at: Option<i64>,
+
     /// Unix timestamp (seconds) when cooperative close was requested.
     /// Once set, no further vouchers are accepted.
     pub close_requested_at: Option<u64>,
@@ -161,6 +185,18 @@ pub struct ChannelState {
     /// Stored at open time so the batch processor can derive the MultiDelegate
     /// PDA and build `TransferFixed` instruction data at settlement.
     pub operator: Option<String>,
+
+    /// Next server-side metered delivery sequence.
+    #[serde(default)]
+    pub next_delivery_sequence: u64,
+
+    /// Deliveries reserved by the server but not yet committed by the client.
+    #[serde(default)]
+    pub pending_deliveries: Vec<PendingDelivery>,
+
+    /// Recently committed deliveries, kept for idempotent commit replay.
+    #[serde(default)]
+    pub committed_deliveries: Vec<CommittedDelivery>,
 }
 
 /// Async store for channel state with compare-and-swap watermark advancement.
@@ -364,8 +400,12 @@ mod tests {
             cumulative: 0,
             finalized: false,
             highest_voucher_signature: None,
+            highest_voucher_expires_at: None,
             close_requested_at: None,
             operator: None,
+            next_delivery_sequence: 0,
+            pending_deliveries: vec![],
+            committed_deliveries: vec![],
         }
     }
 
@@ -496,8 +536,12 @@ mod tests {
                         cumulative: 0,
                         finalized: false,
                         highest_voucher_signature: None,
+                        highest_voucher_expires_at: None,
                         close_requested_at: None,
                         operator: None,
+                        next_delivery_sequence: 0,
+                        pending_deliveries: vec![],
+                        committed_deliveries: vec![],
                     })
                 }),
             )
