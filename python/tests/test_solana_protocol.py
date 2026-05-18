@@ -11,8 +11,8 @@ from solana_mpp.protocol.solana import (
     CredentialPayload,
     MethodDetails,
     Split,
-    default_token_program_for_currency,
     default_rpc_url,
+    default_token_program_for_currency,
     is_native_sol,
     resolve_mint,
     stablecoin_symbol,
@@ -129,6 +129,27 @@ class TestMethodDetails:
         assert details.fee_payer is True
         assert len(details.splits) == 1
         assert details.splits[0].recipient == "addr"
+
+    def test_split_ata_creation_required_round_trips(self):
+        details = MethodDetails(
+            splits=[
+                Split(
+                    recipient="split-recipient",
+                    amount="100",
+                    ata_creation_required=True,
+                )
+            ]
+        )
+
+        encoded = details.to_dict()
+        assert encoded["splits"][0]["ataCreationRequired"] is True
+
+        decoded = MethodDetails.from_dict(encoded)
+        assert decoded.splits[0].ata_creation_required is True
+
+    def test_split_omits_false_ata_creation_required(self):
+        encoded = Split(recipient="split-recipient", amount="100").to_dict()
+        assert "ataCreationRequired" not in encoded
 
 
 class TestCredentialPayload:
