@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 from solders.hash import Hash
-from solders.instruction import Instruction
+from solders.instruction import AccountMeta, Instruction
 from solders.keypair import Keypair
 from solders.message import Message
 from solders.pubkey import Pubkey
@@ -51,6 +51,44 @@ def _build_sol_transaction(recipient: str, lamports: int, memo: str = "") -> str
                 to_pubkey=Pubkey.from_string(recipient),
                 lamports=lamports,
             )
+        )
+    ]
+    if memo:
+        instructions.append(Instruction(Pubkey.from_string(MEMO_PROGRAM), memo.encode("utf-8"), []))
+
+    blockhash = Hash.from_string(TEST_BLOCKHASH)
+    message = Message.new_with_blockhash(instructions, signer.pubkey(), blockhash)
+    transaction = Transaction.new_unsigned(message)
+    transaction.sign([signer], blockhash)
+
+    import base64
+
+    return base64.b64encode(bytes(transaction)).decode("ascii")
+
+
+def _build_spl_transfer_checked_transaction(
+    recipient: str,
+    mint: str,
+    amount: int,
+    memo: str = "",
+    token_program: str = TOKEN_PROGRAM,
+    decimals: int = 6,
+) -> str:
+    signer = Keypair()
+    source = Pubkey.new_unique()
+    destination = Pubkey.from_string(_derive_ata(recipient, mint, token_program))
+    mint_key = Pubkey.from_string(mint)
+    data = bytes([12]) + amount.to_bytes(8, "little") + bytes([decimals])
+    instructions = [
+        Instruction(
+            Pubkey.from_string(token_program),
+            data,
+            [
+                AccountMeta(source, False, True),
+                AccountMeta(mint_key, False, False),
+                AccountMeta(destination, False, True),
+                AccountMeta(signer.pubkey(), True, False),
+            ],
         )
     ]
     if memo:
@@ -486,6 +524,130 @@ class TestVerifyCredential:
             payload={
                 "type": "transaction",
                 "transaction": _build_sol_transaction(TEST_RECIPIENT, 1000),
+            },
+        )
+
+        with pytest.raises(PaymentError, match="No memo instruction found"):
+            await mpp.verify_credential(credential)
+        assert rpc.sent == []
+
+    async def test_token_transaction_verification_broadcasts_matching_transaction(self):
+        recipient_ata = _derive_ata(TEST_RECIPIENT, USDC_DEVNET)
+        tx = {
+            "meta": {"err": None},
+            "transaction": {
+                "message": {
+                    "instructions": [
+                        {
+                            "programId": TOKEN_PROGRAM,
+                            "parsed": {
+                                "type": "transferChecked",
+                                "info": {
+                                    "destination": recipient_ata,
+                                    "mint": USDC_DEVNET,
+                                    "tokenAmount": {"amount": "1000000"},
+                                },
+                            },
+                        }
+                    ]
+                }
+            },
+        }
+        rpc = FakeRPC(tx=tx, send_value="1111111111111111111111111111111111111111111111111111111111111111")
+        mpp = Mpp(
+            Config(
+                recipient=TEST_RECIPIENT,
+                currency="USDC",
+                decimals=6,
+                network="devnet",
+                secret_key=TEST_SECRET,
+                rpc=rpc,
+            )
+        )
+        challenge = mpp.charge_with_options("1.00", ChargeOptions())
+        credential = PaymentCredential(
+            challenge=challenge.to_echo(),
+            payload={
+                "type": "transaction",
+                "transaction": _build_spl_transfer_checked_transaction(TEST_RECIPIENT, USDC_DEVNET, 1000000),
+            },
+        )
+
+        receipt = await mpp.verify_credential(credential)
+        assert receipt.is_success()
+        assert rpc.sent
+
+    async def test_token_transaction_verification_rejects_wrong_recipient_before_broadcast(self):
+        tx = {"meta": {"err": None}, "transaction": {"message": {"instructions": []}}}
+        rpc = FakeRPC(tx=tx, send_value="1111111111111111111111111111111111111111111111111111111111111111")
+        mpp = Mpp(
+            Config(
+                recipient=TEST_RECIPIENT,
+                currency="USDC",
+                decimals=6,
+                network="devnet",
+                secret_key=TEST_SECRET,
+                rpc=rpc,
+            )
+        )
+        challenge = mpp.charge_with_options("1.00", ChargeOptions())
+        credential = PaymentCredential(
+            challenge=challenge.to_echo(),
+            payload={
+                "type": "transaction",
+                "transaction": _build_spl_transfer_checked_transaction(str(Pubkey.new_unique()), USDC_DEVNET, 1000000),
+            },
+        )
+
+        with pytest.raises(PaymentError, match="no matching token transfer"):
+            await mpp.verify_credential(credential)
+        assert rpc.sent == []
+
+    async def test_token_transaction_verification_rejects_wrong_amount_before_broadcast(self):
+        tx = {"meta": {"err": None}, "transaction": {"message": {"instructions": []}}}
+        rpc = FakeRPC(tx=tx, send_value="1111111111111111111111111111111111111111111111111111111111111111")
+        mpp = Mpp(
+            Config(
+                recipient=TEST_RECIPIENT,
+                currency="USDC",
+                decimals=6,
+                network="devnet",
+                secret_key=TEST_SECRET,
+                rpc=rpc,
+            )
+        )
+        challenge = mpp.charge_with_options("1.00", ChargeOptions())
+        credential = PaymentCredential(
+            challenge=challenge.to_echo(),
+            payload={
+                "type": "transaction",
+                "transaction": _build_spl_transfer_checked_transaction(TEST_RECIPIENT, USDC_DEVNET, 999999),
+            },
+        )
+
+        with pytest.raises(PaymentError, match="no matching token transfer"):
+            await mpp.verify_credential(credential)
+        assert rpc.sent == []
+
+    async def test_token_transaction_verification_rejects_missing_memo_before_broadcast(self):
+        tx = {"meta": {"err": None}, "transaction": {"message": {"instructions": []}}}
+        rpc = FakeRPC(tx=tx, send_value="1111111111111111111111111111111111111111111111111111111111111111")
+        mpp = Mpp(
+            Config(
+                recipient=TEST_RECIPIENT,
+                currency="USDC",
+                decimals=6,
+                network="devnet",
+                secret_key=TEST_SECRET,
+                rpc=rpc,
+            )
+        )
+        challenge = mpp.charge_with_options("1.00", ChargeOptions(external_id="order-123"))
+        credential = PaymentCredential(
+            challenge=challenge.to_echo(),
+            payload={
+                "type": "transaction",
+                "transaction": _build_spl_transfer_checked_transaction(TEST_RECIPIENT, USDC_DEVNET, 1000000),
             },
         )
 
