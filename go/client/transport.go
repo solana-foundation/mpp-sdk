@@ -96,11 +96,15 @@ func (t *PaymentTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 
 func selectChargeChallenge(challenges []mpp.PaymentChallenge) (mpp.PaymentChallenge, bool) {
 	for _, challenge := range challenges {
-		if string(challenge.Method) == "solana" && challenge.Intent.IsCharge() {
+		if isSupportedChargeChallenge(challenge) {
 			return challenge, true
 		}
 	}
 	return mpp.PaymentChallenge{}, false
+}
+
+func isSupportedChargeChallenge(challenge mpp.PaymentChallenge) bool {
+	return challenge.Method == mpp.NewMethodName("solana") && challenge.Intent.IsCharge()
 }
 
 // NewClient creates an *http.Client with automatic 402 payment handling.
