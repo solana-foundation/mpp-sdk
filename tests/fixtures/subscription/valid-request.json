@@ -1,0 +1,8 @@
+{
+  "amount": "1000000",
+  "currency": "usd",
+  "periodUnit": "month",
+  "periodCount": "1",
+  "description": "Monthly API plan",
+  "externalId": "plan_monthly_api"
+}
