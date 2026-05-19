@@ -8,6 +8,11 @@
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit"
   },
+  "pnpm": {
+    "overrides": {
+      "ws": "^8.20.1"
+    }
+  },
   "dependencies": {
     "@solana/kit": "^6.5.0",
     "@solana/mpp": "file:../../typescript/packages/mpp",
