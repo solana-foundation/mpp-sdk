@@ -9,6 +9,7 @@ use std::{
 
 use serde_json::json;
 use solana_mpp::protocol::intents::ChargeRequest;
+use solana_mpp::protocol::solana::Split;
 use solana_mpp::server::{ChargeOptions, Config, Mpp};
 use solana_mpp::solana_keychain::{memory::MemorySigner, SolanaSigner};
 use solana_mpp::{
@@ -29,6 +30,7 @@ struct InteropState {
     price: String,
     resource_path: String,
     settlement_header: String,
+    splits: Vec<Split>,
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -76,6 +78,7 @@ fn read_state() -> Result<InteropState, Box<dyn std::error::Error + Send + Sync>
     let price = env::var("MPP_INTEROP_PRICE").unwrap_or_else(|_| DEFAULT_PRICE.to_string());
     let secret_key =
         env::var("MPP_INTEROP_SECRET_KEY").unwrap_or_else(|_| DEFAULT_SECRET_KEY.to_string());
+    let splits = read_splits()?;
 
     Ok(InteropState {
         mpp: Mpp::new(Config {
@@ -92,8 +95,11 @@ fn read_state() -> Result<InteropState, Box<dyn std::error::Error + Send + Sync>
             html: false,
         })?,
         price,
-        resource_path: DEFAULT_RESOURCE_PATH.to_string(),
-        settlement_header: DEFAULT_SETTLEMENT_HEADER.to_string(),
+        resource_path: env::var("MPP_INTEROP_RESOURCE_PATH")
+            .unwrap_or_else(|_| DEFAULT_RESOURCE_PATH.to_string()),
+        settlement_header: env::var("MPP_INTEROP_SETTLEMENT_HEADER")
+            .unwrap_or_else(|_| DEFAULT_SETTLEMENT_HEADER.to_string()),
+        splits,
     })
 }
 
@@ -188,6 +194,7 @@ fn payment_challenge_header(
         ChargeOptions {
             description: Some("Surfpool-backed protected content"),
             fee_payer: true,
+            splits: state.splits.clone(),
             ..Default::default()
         },
     )?;
@@ -222,6 +229,7 @@ fn expected_request_for_route(
         ChargeOptions {
             description: Some("Surfpool-backed protected content"),
             fee_payer: true,
+            splits: state.splits.clone(),
             ..Default::default()
         },
     )?;
@@ -257,6 +265,13 @@ fn write_json_response(
 
 fn read_required_env(name: &str) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
     env::var(name).map_err(|_| format!("{name} is required").into())
+}
+
+fn read_splits() -> Result<Vec<Split>, Box<dyn std::error::Error + Send + Sync>> {
+    match env::var("MPP_INTEROP_SPLITS") {
+        Ok(raw) if !raw.trim().is_empty() => Ok(serde_json::from_str(&raw)?),
+        _ => Ok(Vec::new()),
+    }
 }
 
 fn read_memory_signer(

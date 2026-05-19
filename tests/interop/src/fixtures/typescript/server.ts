@@ -1,8 +1,7 @@
 import http from "node:http";
 import { createKeyPairSignerFromBytes } from "@solana/kit";
 import { Mppx, solana } from "@solana/mpp/server";
-import { interopScenario } from "../../contracts";
-import { fixtureSettlementHeader, readInteropEnvironment } from "./shared";
+import { readInteropEnvironment } from "./shared";
 
 function toWebRequest(request: http.IncomingMessage, body: string): Request {
   const headers = new Headers();
@@ -19,13 +18,17 @@ function toWebRequest(request: http.IncomingMessage, body: string): Request {
   });
 }
 
-function decodeReceiptReference(receiptHeader: string | null): string | undefined {
+function decodeReceiptReference(
+  receiptHeader: string | null,
+): string | undefined {
   if (!receiptHeader) {
     return undefined;
   }
 
   const padded = receiptHeader.replace(/-/g, "+").replace(/_/g, "/");
-  const receipt = JSON.parse(Buffer.from(padded, "base64").toString("utf8")) as {
+  const receipt = JSON.parse(
+    Buffer.from(padded, "base64").toString("utf8"),
+  ) as {
     reference?: string;
   };
   return receipt.reference;
@@ -33,7 +36,9 @@ function decodeReceiptReference(receiptHeader: string | null): string | undefine
 
 async function main() {
   const environment = readInteropEnvironment();
-  const feePayerSigner = await createKeyPairSignerFromBytes(environment.feePayerSecretKey);
+  const feePayerSigner = await createKeyPairSignerFromBytes(
+    environment.feePayerSecretKey,
+  );
   const mppx = Mppx.create({
     secretKey: environment.secretKey,
     methods: [
@@ -44,6 +49,7 @@ async function main() {
         network: environment.network,
         rpcUrl: environment.rpcUrl,
         signer: feePayerSigner,
+        splits: environment.splits,
       }),
     ],
   });
@@ -63,21 +69,27 @@ async function main() {
         return;
       }
 
-      if (request.method !== "GET" || url.pathname !== interopScenario.resourcePath) {
+      if (
+        request.method !== "GET" ||
+        url.pathname !== environment.resourcePath
+      ) {
         response.writeHead(404, { "content-type": "application/json" });
         response.end(JSON.stringify({ error: "not_found" }));
         return;
       }
 
       const result = await mppx.charge({
-        amount: interopScenario.amount,
+        amount: environment.amount,
         currency: environment.mint,
         description: "Surfpool-backed protected content",
       })(toWebRequest(request, body));
 
       if (result.status === 402) {
         const challenge = result.challenge as Response;
-        response.writeHead(challenge.status, Object.fromEntries(challenge.headers));
+        response.writeHead(
+          challenge.status,
+          Object.fromEntries(challenge.headers),
+        );
         response.end(await challenge.text());
         return;
       }
@@ -91,7 +103,7 @@ async function main() {
       const headers = new Headers(paid.headers);
       const settlement = decodeReceiptReference(headers.get("payment-receipt"));
       if (settlement) {
-        headers.set(fixtureSettlementHeader, settlement);
+        headers.set(environment.settlementHeader, settlement);
       }
 
       response.writeHead(paid.status, Object.fromEntries(headers));

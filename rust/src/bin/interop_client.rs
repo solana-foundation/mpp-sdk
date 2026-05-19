@@ -13,6 +13,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let target_url = read_required_env("MPP_INTEROP_TARGET_URL")?;
     let rpc_url = read_required_env("MPP_INTEROP_RPC_URL")?;
     let signer = read_memory_signer("MPP_INTEROP_CLIENT_SECRET_KEY")?;
+    let settlement_header =
+        env::var("MPP_INTEROP_SETTLEMENT_HEADER").unwrap_or_else(|_| SETTLEMENT_HEADER.to_string());
 
     let http = reqwest::Client::new();
     let first_response = http.get(&target_url).send().await?;
@@ -39,7 +41,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .await?;
     let status = paid_response.status();
     let paid_headers = headers_to_map(response_headers(paid_response.headers())?);
-    let settlement = paid_headers.get(SETTLEMENT_HEADER).cloned();
+    let settlement = paid_headers.get(&settlement_header).cloned();
     let raw_body = paid_response.text().await?;
     let response_body = serde_json::from_str::<serde_json::Value>(&raw_body)
         .unwrap_or(serde_json::Value::String(raw_body));

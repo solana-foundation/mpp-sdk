@@ -72,7 +72,8 @@ The Vitest harness prepares Surfpool state and passes these variables to each ad
 - `MPP_INTEROP_PAY_TO`: expected recipient public key
 - `MPP_INTEROP_TARGET_URL`: client-only target URL
 
-The canonical scenario values, including the integer amount expected to settle, live in `src/contracts.ts`.
+The canonical scenario values, including integer amounts, split recipients, and
+expected success/failure status, live in `src/contracts.ts`.
 
 ## Adding an implementation
 
@@ -108,11 +109,16 @@ Use these environment variables to filter the active matrix:
 - `MPP_INTEROP_CLIENTS=typescript,rust`
 - `MPP_INTEROP_SERVERS=typescript,rust`
 - `MPP_INTEROP_INTENTS=charge`
+- `MPP_INTEROP_SCENARIOS=charge-basic,charge-split-ata,charge-network-mismatch`
 
-The current scenario covers only the `charge` intent. Selecting `session` or
-`subscription` currently fails fast with a clear unsupported-intent error.
-Future coverage for those intents should add explicit scenarios behind the same
-selector instead of widening the default CI matrix implicitly.
+The current scenario set covers only the `charge` intent. It includes a basic
+payment, a split payment that requires the server fee payer to create the split
+recipient ATA, and a negative network-mismatch payment. Scenarios can restrict
+the clients or servers they run against when an adapter does not yet report a
+structured failure for that negative case. Selecting `session` or `subscription`
+currently fails fast with a clear unsupported-intent error. Future coverage for
+those intents should add explicit scenarios behind the same selector instead of
+widening the default CI matrix implicitly.
 
 ## Running
 

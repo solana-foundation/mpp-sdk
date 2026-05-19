@@ -1,6 +1,6 @@
 import { createKeyPairSignerFromBytes } from "@solana/kit";
 import { Mppx, solana } from "@solana/mpp/client";
-import { fixtureSettlementHeader, readInteropEnvironment } from "./shared";
+import { readInteropEnvironment } from "./shared";
 
 async function main() {
   const targetUrl = process.env.MPP_INTEROP_TARGET_URL;
@@ -9,7 +9,9 @@ async function main() {
   }
 
   const environment = readInteropEnvironment();
-  const signer = await createKeyPairSignerFromBytes(environment.clientSecretKey);
+  const signer = await createKeyPairSignerFromBytes(
+    environment.clientSecretKey,
+  );
   const client = Mppx.create({
     methods: [
       solana.charge({
@@ -37,7 +39,7 @@ async function main() {
       status: paidResponse.status,
       responseHeaders: Object.fromEntries(paidResponse.headers.entries()),
       responseBody,
-      settlement: paidResponse.headers.get(fixtureSettlementHeader),
+      settlement: paidResponse.headers.get(environment.settlementHeader),
     }),
   );
 }
