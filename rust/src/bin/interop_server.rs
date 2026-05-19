@@ -9,6 +9,7 @@ use std::{
 
 use serde_json::json;
 use solana_mpp::protocol::intents::ChargeRequest;
+use solana_mpp::protocol::solana::Split;
 use solana_mpp::server::{ChargeOptions, Config, Mpp};
 use solana_mpp::solana_keychain::{memory::MemorySigner, SolanaSigner};
 use solana_mpp::{
@@ -27,8 +28,16 @@ const TOKEN_DECIMALS: u8 = 6;
 struct InteropState {
     mpp: Mpp,
     price: String,
+    replay_source: Option<ReplaySource>,
     resource_path: String,
     settlement_header: String,
+    splits: Vec<Split>,
+}
+
+#[derive(Clone)]
+struct ReplaySource {
+    price: String,
+    resource_path: String,
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -74,8 +83,19 @@ fn read_state() -> Result<InteropState, Box<dyn std::error::Error + Send + Sync>
     let fee_payer: Arc<dyn SolanaSigner> =
         Arc::new(read_memory_signer("MPP_INTEROP_FEE_PAYER_SECRET_KEY")?);
     let price = env::var("MPP_INTEROP_PRICE").unwrap_or_else(|_| DEFAULT_PRICE.to_string());
+    let replay_source = match (
+        env::var("MPP_INTEROP_REPLAY_SOURCE_PATH"),
+        env::var("MPP_INTEROP_REPLAY_SOURCE_PRICE"),
+    ) {
+        (Ok(resource_path), Ok(price)) => Some(ReplaySource {
+            price,
+            resource_path,
+        }),
+        _ => None,
+    };
     let secret_key =
         env::var("MPP_INTEROP_SECRET_KEY").unwrap_or_else(|_| DEFAULT_SECRET_KEY.to_string());
+    let splits = read_splits()?;
 
     Ok(InteropState {
         mpp: Mpp::new(Config {
@@ -92,8 +112,12 @@ fn read_state() -> Result<InteropState, Box<dyn std::error::Error + Send + Sync>
             html: false,
         })?,
         price,
-        resource_path: DEFAULT_RESOURCE_PATH.to_string(),
-        settlement_header: DEFAULT_SETTLEMENT_HEADER.to_string(),
+        replay_source,
+        resource_path: env::var("MPP_INTEROP_RESOURCE_PATH")
+            .unwrap_or_else(|_| DEFAULT_RESOURCE_PATH.to_string()),
+        settlement_header: env::var("MPP_INTEROP_SETTLEMENT_HEADER")
+            .unwrap_or_else(|_| DEFAULT_SETTLEMENT_HEADER.to_string()),
+        splits,
     })
 }
 
@@ -130,9 +154,10 @@ fn handle_connection(
 
     match (method, path) {
         ("GET", HEALTH_PATH) => write_json_response(&mut stream, 200, &[], &json!({ "ok": true }))?,
-        ("GET", path) if path == state.resource_path => {
+        ("GET", path) if route_price(state, path).is_some() => {
+            let price = route_price(state, path).expect("route price checked above");
             if let Some(authorization) = headers.get(AUTHORIZATION_HEADER) {
-                match settle_payment(state, runtime, authorization) {
+                match settle_payment(state, runtime, authorization, price) {
                     Ok((receipt_header, settlement)) => {
                         write_json_response(
                             &mut stream,
@@ -152,7 +177,7 @@ fn handle_connection(
                         )?;
                     }
                     Err(error) => {
-                        let challenge_header = payment_challenge_header(state)?;
+                        let challenge_header = payment_challenge_header(state, price)?;
                         write_json_response(
                             &mut stream,
                             402,
@@ -165,7 +190,7 @@ fn handle_connection(
                     }
                 }
             } else {
-                let challenge_header = payment_challenge_header(state)?;
+                let challenge_header = payment_challenge_header(state, price)?;
                 write_json_response(
                     &mut stream,
                     402,
@@ -182,12 +207,14 @@ fn handle_connection(
 
 fn payment_challenge_header(
     state: &InteropState,
+    price: &str,
 ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
     let challenge = state.mpp.charge_with_options(
-        &state.price,
+        price,
         ChargeOptions {
             description: Some("Surfpool-backed protected content"),
             fee_payer: true,
+            splits: state.splits.clone(),
             ..Default::default()
         },
     )?;
@@ -198,13 +225,14 @@ fn settle_payment(
     state: &InteropState,
     runtime: &tokio::runtime::Runtime,
     authorization: &str,
+    price: &str,
 ) -> Result<(String, String), Box<dyn std::error::Error + Send + Sync>> {
     let credential = parse_authorization(authorization)?;
     // Build the route's expected request and use the route-aware verification
     // path. With a single resource path this server isn't itself vulnerable to
     // cross-route replay, but we model the safe pattern so anyone copying the
     // example onto a multi-route server is protected by default.
-    let expected = expected_request_for_route(state)?;
+    let expected = expected_request_for_route(state, price)?;
     let receipt = runtime.block_on(
         state
             .mpp
@@ -216,16 +244,30 @@ fn settle_payment(
 
 fn expected_request_for_route(
     state: &InteropState,
+    price: &str,
 ) -> Result<ChargeRequest, Box<dyn std::error::Error + Send + Sync>> {
     let challenge = state.mpp.charge_with_options(
-        &state.price,
+        price,
         ChargeOptions {
             description: Some("Surfpool-backed protected content"),
             fee_payer: true,
+            splits: state.splits.clone(),
             ..Default::default()
         },
     )?;
     Ok(challenge.request.decode()?)
+}
+
+fn route_price<'a>(state: &'a InteropState, path: &str) -> Option<&'a str> {
+    if path == state.resource_path {
+        return Some(state.price.as_str());
+    }
+    if let Some(replay_source) = &state.replay_source {
+        if path == replay_source.resource_path {
+            return Some(replay_source.price.as_str());
+        }
+    }
+    None
 }
 
 fn write_json_response(
@@ -257,6 +299,13 @@ fn write_json_response(
 
 fn read_required_env(name: &str) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
     env::var(name).map_err(|_| format!("{name} is required").into())
+}
+
+fn read_splits() -> Result<Vec<Split>, Box<dyn std::error::Error + Send + Sync>> {
+    match env::var("MPP_INTEROP_SPLITS") {
+        Ok(raw) if !raw.trim().is_empty() => Ok(serde_json::from_str(&raw)?),
+        _ => Ok(Vec::new()),
+    }
 }
 
 fn read_memory_signer(

@@ -1,7 +1,11 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { createInterface } from "node:readline";
 import { setTimeout as delay } from "node:timers/promises";
-import type { AdapterMessage, ClientRunResult, ReadyMessage } from "./contracts";
+import type {
+  AdapterMessage,
+  ClientRunResult,
+  ReadyMessage,
+} from "./contracts";
 import type { ImplementationDefinition } from "./implementations";
 
 type RunningServer = {
@@ -24,7 +28,7 @@ async function waitForJsonMessage<T extends AdapterMessage>(
   try {
     return await Promise.race([
       new Promise<T>((resolve, reject) => {
-        readline.on("line", line => {
+        readline.on("line", (line) => {
           if (!line.trim()) {
             return;
           }
@@ -33,17 +37,26 @@ async function waitForJsonMessage<T extends AdapterMessage>(
             resolve(JSON.parse(line) as T);
           } catch (error) {
             reject(
-              new Error(`Failed to parse adapter output as JSON: ${line}\n${String(error)}`),
+              new Error(
+                `Failed to parse adapter output as JSON: ${line}\n${String(error)}`,
+              ),
             );
           }
         });
 
-        child.once("exit", code => {
-          reject(new Error(`Adapter exited before signaling readiness/result (code ${code ?? -1})`));
+        child.once("exit", (code) => {
+          reject(
+            new Error(
+              `Adapter exited before signaling readiness/result (code ${code ?? -1})`,
+            ),
+          );
         });
       }),
       delay(timeoutMs).then(() => {
-        throw new Error(`Timed out waiting for adapter output after ${timeoutMs}ms`);
+        child.kill("SIGTERM");
+        throw new Error(
+          `Timed out waiting for adapter output after ${timeoutMs}ms`,
+        );
       }),
     ]);
   } finally {
@@ -71,11 +84,16 @@ export async function startServer(
   extraEnv: Record<string, string> = {},
 ): Promise<RunningServer> {
   const child = spawnAdapter(implementation, extraEnv);
-  const ready = await waitForJsonMessage<ReadyMessage>(child, ADAPTER_OUTPUT_TIMEOUT_MS);
+  const ready = await waitForJsonMessage<ReadyMessage>(
+    child,
+    ADAPTER_OUTPUT_TIMEOUT_MS,
+  );
 
   if (ready.type !== "ready" || ready.role !== "server" || !ready.port) {
     child.kill("SIGTERM");
-    throw new Error(`Unexpected server readiness payload from ${implementation.id}`);
+    throw new Error(
+      `Unexpected server readiness payload from ${implementation.id}`,
+    );
   }
 
   return { child, ready };
@@ -91,28 +109,44 @@ export async function runClient(
     ...extraEnv,
   });
 
-  const result = await waitForJsonMessage<ClientRunResult>(child, ADAPTER_OUTPUT_TIMEOUT_MS);
-  await new Promise<void>((resolve, reject) => {
-    child.once("exit", code => {
-      if (code === 0) {
-        resolve();
-      } else {
-        reject(new Error(`Client adapter exited with code ${code ?? -1}`));
-      }
-    });
-  });
+  const result = await waitForJsonMessage<ClientRunResult>(
+    child,
+    ADAPTER_OUTPUT_TIMEOUT_MS,
+  );
+  await waitForExit(child, "Client adapter");
 
   if (result.type !== "result" || result.role !== "client") {
-    throw new Error(`Unexpected client result payload from ${implementation.id}`);
+    throw new Error(
+      `Unexpected client result payload from ${implementation.id}`,
+    );
   }
 
   return result;
 }
 
+async function waitForExit(child: ChildProcess, label: string): Promise<void> {
+  if (child.exitCode !== null) {
+    if (child.exitCode === 0) {
+      return;
+    }
+    throw new Error(`${label} exited with code ${child.exitCode}`);
+  }
+
+  await new Promise<void>((resolve, reject) => {
+    child.once("exit", (code) => {
+      if (code === 0) {
+        resolve();
+      } else {
+        reject(new Error(`${label} exited with code ${code ?? -1}`));
+      }
+    });
+  });
+}
+
 export async function stopServer(server: RunningServer): Promise<void> {
   server.child.kill("SIGTERM");
   await Promise.race([
-    new Promise<void>(resolve => {
+    new Promise<void>((resolve) => {
       server.child.once("exit", () => resolve());
     }),
     delay(5_000).then(() => {

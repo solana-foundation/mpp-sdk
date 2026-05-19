@@ -1,13 +1,32 @@
 export type AdapterKind = "client" | "server";
 
+export type InteropIntent = "charge";
+
+export type InteropScenarioSplit = {
+  recipientKey: string;
+  amount: string;
+  ataCreationRequired?: boolean;
+  memo?: string;
+};
+
 export type InteropScenario = {
-  intent: "charge";
+  id: string;
+  intent: InteropIntent;
   network: string;
   price: string;
   amount: string;
   asset: string;
   resourcePath: string;
   settlementHeader: string;
+  splits?: InteropScenarioSplit[];
+  replaySource?: {
+    resourcePath: string;
+    price: string;
+    amount: string;
+  };
+  expectedStatus: 200 | 402;
+  clientIds?: string[];
+  serverIds?: string[];
 };
 
 export type ReadyMessage = {
@@ -31,12 +50,142 @@ export type ClientRunResult = {
 
 export type AdapterMessage = ReadyMessage | ClientRunResult;
 
+export const interopScenarios: readonly InteropScenario[] = [
+  {
+    id: "charge-basic",
+    intent: "charge",
+    network: "localnet",
+    price: "0.001",
+    amount: "1000",
+    asset: "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+    resourcePath: "/protected",
+    settlementHeader: "x-fixture-settlement",
+    expectedStatus: 200,
+  },
+  {
+    id: "charge-split-ata",
+    intent: "charge",
+    network: "localnet",
+    price: "0.001",
+    amount: "1000",
+    asset: "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+    resourcePath: "/protected/split-ata",
+    settlementHeader: "x-fixture-settlement",
+    splits: [
+      {
+        recipientKey: "platform",
+        amount: "250",
+        ataCreationRequired: true,
+        memo: "interop split",
+      },
+    ],
+    expectedStatus: 200,
+  },
+  {
+    id: "charge-network-mismatch",
+    intent: "charge",
+    network: "devnet",
+    price: "0.001",
+    amount: "1000",
+    asset: "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+    resourcePath: "/protected/network-mismatch",
+    settlementHeader: "x-fixture-settlement",
+    expectedStatus: 402,
+    clientIds: ["typescript"],
+  },
+  {
+    id: "charge-cross-route-replay",
+    intent: "charge",
+    network: "localnet",
+    price: "0.001",
+    amount: "1000",
+    asset: "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+    resourcePath: "/protected/expensive",
+    settlementHeader: "x-fixture-settlement",
+    replaySource: {
+      resourcePath: "/protected/cheap",
+      price: "0.0005",
+      amount: "500",
+    },
+    expectedStatus: 402,
+    clientIds: ["typescript"],
+  },
+] as const;
+
 export const interopScenario: InteropScenario = {
-  intent: "charge",
-  network: "localnet",
-  price: "0.001",
-  amount: "1000",
-  asset: "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
-  resourcePath: "/protected",
-  settlementHeader: "x-fixture-settlement",
+  ...(interopScenarios[0] as InteropScenario),
 };
+
+export const supportedInteropIntents: readonly InteropIntent[] = Array.from(
+  new Set(interopScenarios.map((scenario) => scenario.intent)),
+);
+
+export function selectInteropScenarios(
+  rawIntentSelection: string | undefined,
+  rawScenarioSelection: string | undefined,
+): InteropScenario[] {
+  const selectedIntents = selectInteropIntents(rawIntentSelection);
+  const selectedScenarioIds = selectScenarioIds(rawScenarioSelection);
+  const selectedScenarios = interopScenarios.filter(
+    (scenario) =>
+      selectedIntents.includes(scenario.intent) &&
+      selectedScenarioIds.includes(scenario.id),
+  );
+
+  if (selectedScenarios.length === 0) {
+    throw new Error(
+      `No interop scenarios matched MPP_INTEROP_INTENTS=${rawIntentSelection ?? "<default>"} ` +
+        `and MPP_INTEROP_SCENARIOS=${rawScenarioSelection ?? "<default>"}.`,
+    );
+  }
+
+  return [...selectedScenarios];
+}
+
+function selectScenarioIds(rawSelection: string | undefined): string[] {
+  const supported = interopScenarios.map((scenario) => scenario.id);
+  if (!rawSelection || rawSelection.trim() === "") {
+    return supported;
+  }
+
+  const selected = rawSelection
+    .split(",")
+    .map((value) => value.trim())
+    .filter(Boolean);
+  const unsupported = selected.filter((value) => !supported.includes(value));
+
+  if (unsupported.length > 0) {
+    throw new Error(
+      `Unsupported MPP_INTEROP_SCENARIOS value(s): ${unsupported.join(", ")}. ` +
+        `Supported scenarios: ${supported.join(", ")}.`,
+    );
+  }
+
+  return selected;
+}
+
+export function selectInteropIntents(
+  rawSelection: string | undefined,
+): InteropIntent[] {
+  if (!rawSelection || rawSelection.trim() === "") {
+    return [...supportedInteropIntents];
+  }
+
+  const selected = rawSelection
+    .split(",")
+    .map((value) => value.trim())
+    .filter(Boolean);
+  const unsupported = selected.filter(
+    (value) => !supportedInteropIntents.includes(value as never),
+  );
+
+  if (unsupported.length > 0) {
+    throw new Error(
+      `Unsupported MPP_INTEROP_INTENTS value(s): ${unsupported.join(", ")}. ` +
+        `Supported intents: ${supportedInteropIntents.join(", ")}. ` +
+        "Session and subscription scenarios are not implemented in this harness yet.",
+    );
+  }
+
+  return selected as InteropIntent[];
+}

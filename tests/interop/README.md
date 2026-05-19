@@ -2,10 +2,9 @@
 
 This directory contains the cross-language MPP interoperability tests.
 
-There are currently two interop layers:
-
-- `test_*.py` runs the legacy Python client conformance suite against language-specific payment link servers.
-- `src/` and `test/e2e.test.ts` run process-based client/server adapters against Surfpool. This is the adapter contract new language implementations should target.
+The active interop layer is the TypeScript/Vitest process harness in `src/`
+and `test/e2e.test.ts`. This is the adapter contract new language
+implementations should target.
 
 ## Process adapter contract
 
@@ -72,8 +71,12 @@ The Vitest harness prepares Surfpool state and passes these variables to each ad
 - `MPP_INTEROP_FEE_PAYER_SECRET_KEY`: JSON array for the server fee payer keypair
 - `MPP_INTEROP_PAY_TO`: expected recipient public key
 - `MPP_INTEROP_TARGET_URL`: client-only target URL
+- `MPP_INTEROP_REPLAY_SOURCE_PATH`: optional cheaper source route for cross-route replay tests
+- `MPP_INTEROP_REPLAY_SOURCE_PRICE`: optional source route display price
+- `MPP_INTEROP_REPLAY_SOURCE_AMOUNT`: optional source route integer amount
 
-The canonical scenario values, including the integer amount expected to settle, live in `src/contracts.ts`.
+The canonical scenario values, including integer amounts, split recipients, and
+expected success/failure status, live in `src/contracts.ts`.
 
 ## Adding an implementation
 
@@ -84,11 +87,43 @@ The canonical scenario values, including the integer amount expected to settle, 
 5. Run a focused matrix before enabling it by default:
 
 ```bash
-MPP_INTEROP_CLIENTS=<id> MPP_INTEROP_SERVERS=typescript pnpm test
-MPP_INTEROP_CLIENTS=typescript MPP_INTEROP_SERVERS=<id> pnpm test
+MPP_INTEROP_CLIENTS=<id> MPP_INTEROP_SERVERS=rust pnpm test
+MPP_INTEROP_CLIENTS=rust MPP_INTEROP_SERVERS=<id> pnpm test
 ```
 
 Enable the implementation by default only after the focused matrix is stable.
+
+## Matrix strategy
+
+The harness can run a full client/server cross-product, but CI should keep the
+default smoke matrix small and intentional. Rust is the reference implementation
+for the current CI gate:
+
+- every enabled client should pass against the Rust server
+- the Rust client should pass against every enabled server
+
+This hub-and-spoke shape catches regressions in both directions without running
+every implementation against every other implementation on every pull request.
+Run the full cross-product locally when a protocol-level change needs broader
+coverage.
+
+Use these environment variables to filter the active matrix:
+
+- `MPP_INTEROP_CLIENTS=typescript,rust`
+- `MPP_INTEROP_SERVERS=typescript,rust`
+- `MPP_INTEROP_INTENTS=charge`
+- `MPP_INTEROP_SCENARIOS=charge-basic,charge-split-ata,charge-network-mismatch,charge-cross-route-replay`
+
+The current scenario set covers only the `charge` intent. It includes a basic
+payment, a split payment that requires the server fee payer to create the split
+recipient ATA, a negative network-mismatch payment, and a cross-route replay
+attempt where a credential issued for a cheaper route is replayed against a
+more expensive route. Scenarios can restrict the clients or servers they run
+against when an adapter does not yet report a structured failure for that
+negative case. Selecting `session` or `subscription` currently fails fast with a
+clear unsupported-intent error. Future coverage for those intents should add
+explicit scenarios behind the same selector instead of widening the default CI
+matrix implicitly.
 
 ## Running
 
