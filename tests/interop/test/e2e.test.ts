@@ -43,6 +43,12 @@ function createSplMintAccountData(decimals: number): Uint8Array {
 }
 
 const socketSupport = await canBindLocalSocket();
+const activeServers = serverImplementations.filter(implementation => implementation.enabled);
+const activeClients = clientImplementations.filter(implementation => implementation.enabled);
+
+function implementationIds(implementations: typeof serverImplementations): string {
+  return implementations.map(implementation => implementation.id).join(", ");
+}
 
 beforeAll(async () => {
   if (!socketSupport) {
@@ -80,9 +86,18 @@ afterEach(async () => {
 });
 
 describe("mpp interop", () => {
-  const activeServers = serverImplementations.filter(implementation => implementation.enabled);
-  const activeClients = clientImplementations.filter(implementation => implementation.enabled);
   const socketAwareIt = socketSupport ? it : it.skip;
+
+  it("has at least one enabled client and server implementation", () => {
+    expect(
+      activeClients.length,
+      `No MPP interop clients enabled. Set MPP_INTEROP_CLIENTS to one of: ${implementationIds(clientImplementations)}`,
+    ).toBeGreaterThan(0);
+    expect(
+      activeServers.length,
+      `No MPP interop servers enabled. Set MPP_INTEROP_SERVERS to one of: ${implementationIds(serverImplementations)}`,
+    ).toBeGreaterThan(0);
+  });
 
   for (const serverImplementation of activeServers) {
     for (const clientImplementation of activeClients) {
