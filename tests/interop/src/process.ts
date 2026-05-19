@@ -160,7 +160,7 @@ export async function runClient(
       if (code === 0) {
         resolve();
       } else {
-        reject(new Error(`Client adapter exited with code ${code ?? -1}`));
+        reject(new Error(`${describeAdapter(child)} exited with code ${code ?? -1}${stderrTail(child)}`));
       }
     });
   });
