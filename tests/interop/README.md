@@ -99,6 +99,17 @@ pnpm install --frozen-lockfile
 pnpm test
 ```
 
+Run one adapter pair when isolating a failure:
+
+```bash
+MPP_INTEROP_CLIENTS=rust MPP_INTEROP_SERVERS=typescript pnpm test
+MPP_INTEROP_CLIENTS=typescript MPP_INTEROP_SERVERS=rust pnpm test
+MPP_INTEROP_CLIENTS=typescript MPP_INTEROP_SERVERS=go pnpm test
+```
+
+If either selection variable names no registered adapter, the suite fails with
+the selected client/server lists instead of silently running an empty matrix.
+
 If the TypeScript adapter cannot resolve `@solana/mpp/client` or
 `@solana/mpp/server`, rebuild the local package and refresh the interop package
 install:
@@ -117,3 +128,15 @@ pnpm test
 `dist` files.
 
 The harness starts Surfpool through `start-surfnet-proxy.mjs`, funds the test accounts, starts each enabled server adapter, runs each enabled client adapter against it, and verifies the recipient balance delta.
+
+## Python conformance suite
+
+The legacy Python suite expects an already-running server and Surfpool RPC:
+
+```bash
+SERVER_URL=http://localhost:3002 RPC_URL=http://localhost:8899 \
+  ../../python/.venv/bin/python -m pytest . -v --rootdir=.
+```
+
+Use the repo virtualenv when available; a system Python may be missing `solders`
+or other Solana test dependencies.

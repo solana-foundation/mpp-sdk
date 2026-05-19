@@ -9,7 +9,46 @@ type RunningServer = {
   ready: ReadyMessage;
 };
 
-const ADAPTER_OUTPUT_TIMEOUT_MS = 120_000;
+const DEFAULT_ADAPTER_OUTPUT_TIMEOUT_MS = 120_000;
+const STDERR_TAIL_BYTES = 8_192;
+
+type AdapterDebugContext = {
+  command: string;
+  id: string;
+  role: ImplementationDefinition["role"];
+  stderr: string;
+};
+
+const adapterDebug = new WeakMap<ChildProcess, AdapterDebugContext>();
+
+function describeAdapter(child: ChildProcess): string {
+  const context = adapterDebug.get(child);
+  if (!context) {
+    return "adapter";
+  }
+
+  return `${context.role} adapter ${context.id} (${context.command})`;
+}
+
+function stderrTail(child: ChildProcess): string {
+  const context = adapterDebug.get(child);
+  const stderr = context?.stderr.trim();
+  return stderr ? `\nLast stderr:\n${stderr}` : "";
+}
+
+function adapterOutputTimeoutMs(): number {
+  const raw = process.env.MPP_INTEROP_ADAPTER_TIMEOUT_MS;
+  if (!raw) {
+    return DEFAULT_ADAPTER_OUTPUT_TIMEOUT_MS;
+  }
+
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    throw new Error(`MPP_INTEROP_ADAPTER_TIMEOUT_MS must be a positive integer, got ${raw}`);
+  }
+
+  return parsed;
+}
 
 async function waitForJsonMessage<T extends AdapterMessage>(
   child: ChildProcess,
@@ -33,17 +72,31 @@ async function waitForJsonMessage<T extends AdapterMessage>(
             resolve(JSON.parse(line) as T);
           } catch (error) {
             reject(
-              new Error(`Failed to parse adapter output as JSON: ${line}\n${String(error)}`),
+              new Error(
+                `Failed to parse ${describeAdapter(child)} output as JSON: ${line}\n${String(
+                  error,
+                )}${stderrTail(child)}`,
+              ),
             );
           }
         });
 
         child.once("exit", code => {
-          reject(new Error(`Adapter exited before signaling readiness/result (code ${code ?? -1})`));
+          reject(
+            new Error(
+              `${describeAdapter(child)} exited before signaling readiness/result (code ${
+                code ?? -1
+              })${stderrTail(child)}`,
+            ),
+          );
         });
       }),
       delay(timeoutMs).then(() => {
-        throw new Error(`Timed out waiting for adapter output after ${timeoutMs}ms`);
+        throw new Error(
+          `Timed out waiting for ${describeAdapter(child)} output after ${timeoutMs}ms${stderrTail(
+            child,
+          )}`,
+        );
       }),
     ]);
   } finally {
@@ -56,26 +109,51 @@ function spawnAdapter(
   extraEnv: Record<string, string> = {},
 ): ChildProcess {
   const [command, ...args] = implementation.command;
-  return spawn(command, args, {
+  const child = spawn(command, args, {
     cwd: process.cwd(),
     env: {
       ...process.env,
       ...extraEnv,
     },
-    stdio: ["ignore", "pipe", "inherit"],
+    stdio: ["ignore", "pipe", "pipe"],
   });
+  const context: AdapterDebugContext = {
+    command: implementation.command.join(" "),
+    id: implementation.id,
+    role: implementation.role,
+    stderr: "",
+  };
+  adapterDebug.set(child, context);
+
+  child.stderr?.on("data", chunk => {
+    const text = chunk.toString();
+    process.stderr.write(text);
+    context.stderr = (context.stderr + text).slice(-STDERR_TAIL_BYTES);
+  });
+
+  return child;
 }
 
 export async function startServer(
   implementation: ImplementationDefinition,
   extraEnv: Record<string, string> = {},
 ): Promise<RunningServer> {
+  const timeoutMs = adapterOutputTimeoutMs();
   const child = spawnAdapter(implementation, extraEnv);
-  const ready = await waitForJsonMessage<ReadyMessage>(child, ADAPTER_OUTPUT_TIMEOUT_MS);
+  const ready = await waitForJsonMessage<ReadyMessage>(child, timeoutMs);
 
   if (ready.type !== "ready" || ready.role !== "server" || !ready.port) {
     child.kill("SIGTERM");
-    throw new Error(`Unexpected server readiness payload from ${implementation.id}`);
+    throw new Error(
+      `Unexpected server readiness payload from ${implementation.id}: ${JSON.stringify(ready)}`,
+    );
+  }
+
+  if (ready.implementation !== implementation.id) {
+    child.kill("SIGTERM");
+    throw new Error(
+      `Server adapter ${implementation.id} reported implementation ${ready.implementation}`,
+    );
   }
 
   return { child, ready };
@@ -86,24 +164,33 @@ export async function runClient(
   targetUrl: string,
   extraEnv: Record<string, string> = {},
 ): Promise<ClientRunResult> {
+  const timeoutMs = adapterOutputTimeoutMs();
   const child = spawnAdapter(implementation, {
     MPP_INTEROP_TARGET_URL: targetUrl,
     ...extraEnv,
   });
 
-  const result = await waitForJsonMessage<ClientRunResult>(child, ADAPTER_OUTPUT_TIMEOUT_MS);
+  const result = await waitForJsonMessage<ClientRunResult>(child, timeoutMs);
   await new Promise<void>((resolve, reject) => {
     child.once("exit", code => {
       if (code === 0) {
         resolve();
       } else {
-        reject(new Error(`Client adapter exited with code ${code ?? -1}`));
+        reject(new Error(`${describeAdapter(child)} exited with code ${code ?? -1}${stderrTail(child)}`));
       }
     });
   });
 
   if (result.type !== "result" || result.role !== "client") {
-    throw new Error(`Unexpected client result payload from ${implementation.id}`);
+    throw new Error(
+      `Unexpected client result payload from ${implementation.id}: ${JSON.stringify(result)}`,
+    );
+  }
+
+  if (result.implementation !== implementation.id) {
+    throw new Error(
+      `Client adapter ${implementation.id} reported implementation ${result.implementation}`,
+    );
   }
 
   return result;
