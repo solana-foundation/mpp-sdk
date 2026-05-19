@@ -50,7 +50,22 @@ function implementationIds(implementations: typeof serverImplementations): strin
   return implementations.map(implementation => implementation.id).join(", ");
 }
 
+function enabledImplementationIds(implementations: typeof serverImplementations): string {
+  return implementations.map(implementation => implementation.id).join(", ") || "(none)";
+}
+
 beforeAll(async () => {
+  process.stderr.write(
+    `${[
+      `MPP interop matrix: clients=${enabledImplementationIds(activeClients)}`,
+      `servers=${enabledImplementationIds(activeServers)}`,
+      `intent=${interopScenario.intent}`,
+      `network=${interopScenario.network}`,
+      `amount=${interopScenario.amount}`,
+      `asset=${interopScenario.asset}`,
+    ].join(" ")}\n`,
+  );
+
   if (!socketSupport) {
     return;
   }
