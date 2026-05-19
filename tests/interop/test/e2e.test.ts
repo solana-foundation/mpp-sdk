@@ -2,7 +2,7 @@ import net from "node:net";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 import { createSolanaRpc } from "@solana/kit";
 import { Surfnet } from "surfpool-sdk";
-import { interopScenario } from "../src/contracts";
+import { interopScenario, selectInteropIntents } from "../src/contracts";
 import { clientImplementations, serverImplementations } from "../src/implementations";
 import { runClient, startServer, stopServer } from "../src/process";
 
@@ -80,9 +80,14 @@ afterEach(async () => {
 });
 
 describe("mpp interop", () => {
+  const activeIntents = selectInteropIntents(process.env.MPP_INTEROP_INTENTS);
   const activeServers = serverImplementations.filter(implementation => implementation.enabled);
   const activeClients = clientImplementations.filter(implementation => implementation.enabled);
   const socketAwareIt = socketSupport ? it : it.skip;
+
+  if (!activeIntents.includes(interopScenario.intent)) {
+    throw new Error(`No scenario is registered for selected intents: ${activeIntents.join(", ")}`);
+  }
 
   for (const serverImplementation of activeServers) {
     for (const clientImplementation of activeClients) {

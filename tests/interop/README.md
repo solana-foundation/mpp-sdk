@@ -84,11 +84,36 @@ The canonical scenario values, including the integer amount expected to settle, 
 5. Run a focused matrix before enabling it by default:
 
 ```bash
-MPP_INTEROP_CLIENTS=<id> MPP_INTEROP_SERVERS=typescript pnpm test
-MPP_INTEROP_CLIENTS=typescript MPP_INTEROP_SERVERS=<id> pnpm test
+MPP_INTEROP_CLIENTS=<id> MPP_INTEROP_SERVERS=rust pnpm test
+MPP_INTEROP_CLIENTS=rust MPP_INTEROP_SERVERS=<id> pnpm test
 ```
 
 Enable the implementation by default only after the focused matrix is stable.
+
+## Matrix strategy
+
+The harness can run a full client/server cross-product, but CI should keep the
+default smoke matrix small and intentional. Rust is the reference implementation
+for the current CI gate:
+
+- every enabled client should pass against the Rust server
+- the Rust client should pass against every enabled server
+
+This hub-and-spoke shape catches regressions in both directions without running
+every implementation against every other implementation on every pull request.
+Run the full cross-product locally when a protocol-level change needs broader
+coverage.
+
+Use these environment variables to filter the active matrix:
+
+- `MPP_INTEROP_CLIENTS=typescript,rust`
+- `MPP_INTEROP_SERVERS=typescript,rust`
+- `MPP_INTEROP_INTENTS=charge`
+
+The current scenario covers only the `charge` intent. Selecting `session` or
+`subscription` currently fails fast with a clear unsupported-intent error.
+Future coverage for those intents should add explicit scenarios behind the same
+selector instead of widening the default CI matrix implicitly.
 
 ## Running
 

@@ -383,37 +383,20 @@ jobs:
         run: npm run test:e2e:rust
 
   interop:
-    name: "Interop: Python → ${{ matrix.server }}"
+    name: "Interop: TypeScript harness"
     needs: build-html
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - server: rust
-            port: 3001
-            setup: |
-              rustup toolchain install stable
-              cd rust && cargo build --example payment_link_server
-            start: cd rust && cargo run --example payment_link_server &
-          - server: go
-            port: 3002
-            setup: |
-              cd go && GOCACHE=/tmp/go-build-cache go build ./cmd/payment-link-server
-            start: cd go && GOCACHE=/tmp/go-build-cache go run ./cmd/payment-link-server &
-          - server: lua
-            port: 3003
-            setup: ""
-            start: node lua/tests/e2e-server.mjs &
-          - server: python
-            port: 3004
-            setup: cd python && pip install -e . -q
-            start: cd python && python examples/payment_link_server.py &
     steps:
       - uses: actions/checkout@v5
-      - uses: actions/setup-python@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/cache@v5
         with:
-          python-version: "3.13"
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            rust/target
+          key: ${{ runner.os }}-cargo-interop-${{ hashFiles('rust/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-interop-
       - uses: pnpm/action-setup@v5
         with:
           package_json_file: package.json
@@ -422,55 +405,40 @@ jobs:
           node-version: 22
           cache: pnpm
           cache-dependency-path: typescript/pnpm-lock.yaml
-      - uses: dtolnay/rust-toolchain@stable
-        if: matrix.server == 'rust'
-      - uses: actions/setup-go@v6
-        if: matrix.server == 'go'
-        with:
-          go-version-file: go/go.mod
-          cache-dependency-path: go/go.sum
       - name: Download HTML assets
         uses: actions/download-artifact@v7
         with:
           name: html-assets
-      - name: Install Surfnet helper dependencies
+      - name: Install TypeScript workspace
+        working-directory: typescript
+        run: pnpm install --frozen-lockfile
+      - name: Build TypeScript package
+        working-directory: typescript
+        run: pnpm --filter @solana/mpp build
+      - name: Build Rust interop adapters
+        working-directory: rust
+        run: cargo build --bin interop_client --bin interop_server
+      - name: Install interop harness
         working-directory: tests/interop
         run: pnpm install --frozen-lockfile
-      - name: Start Surfnet
-        working-directory: .
-        run: |
-          node tests/interop/start-surfnet-proxy.mjs &
-          ready=0
-          for i in $(seq 1 50); do
-            if curl -sf -X POST http://localhost:8899 \
-              -H "Content-Type: application/json" \
-              -d '{"jsonrpc":"2.0","id":1,"method":"getHealth","params":[]}' \
-              | grep -q '"result":"ok"'; then
-              ready=1
-              break
-            fi
-            sleep 0.2
-          done
-          test "$ready" -eq 1
-      - name: Install interop test dependencies
-        working-directory: .
-        run: pip install -r tests/interop/requirements.txt -q
-      - name: Setup server
-        working-directory: .
-        run: ${{ matrix.setup }}
-      - name: Start ${{ matrix.server }} server
-        working-directory: .
-        run: ${{ matrix.start }}
-      - name: Wait for server
-        working-directory: .
-        run: |
-          for i in $(seq 1 15); do
-            curl -sf http://localhost:${{ matrix.port }}/health && break
-            sleep 1
-          done
-      - name: Run interop tests
-        working-directory: .
-        run: |
-          SERVER_URL=http://localhost:${{ matrix.port }} \
-          RPC_URL=http://localhost:8899 \
-          python -m pytest tests/interop/ -v --rootdir=tests/interop
+      - name: Typecheck interop harness
+        working-directory: tests/interop
+        run: pnpm typecheck
+      - name: Run Rust client interop smoke
+        working-directory: tests/interop
+        run: pnpm exec vitest run test/e2e.test.ts --testNamePattern "rust client pays typescript server"
+        env:
+          MPP_INTEROP_CLIENTS: rust
+          MPP_INTEROP_SERVERS: typescript
+      - name: Run Rust server interop smoke
+        working-directory: tests/interop
+        run: pnpm exec vitest run test/e2e.test.ts --testNamePattern "typescript client pays rust server"
+        env:
+          MPP_INTEROP_CLIENTS: typescript
+          MPP_INTEROP_SERVERS: rust
+      - name: Run Rust end-to-end interop smoke
+        working-directory: tests/interop
+        run: pnpm exec vitest run test/e2e.test.ts --testNamePattern "rust client pays rust server"
+        env:
+          MPP_INTEROP_CLIENTS: rust
+          MPP_INTEROP_SERVERS: rust
