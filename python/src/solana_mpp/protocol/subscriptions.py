@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from typing import Any
 
@@ -101,6 +101,51 @@ class SubscriptionReceipt:
         return data
 
 
+@dataclass
+class SubscriptionAccountState:
+    """Minimum durable accounting state for a subscription."""
+
+    subscription_id: str
+    anchor: datetime
+    period_unit: SubscriptionPeriodUnit | str
+    period_count: int
+    last_paid_period: int
+    canceled_at: datetime | None = None
+    revoked: bool = False
+
+    def __post_init__(self) -> None:
+        self.period_unit = normalize_period_unit(self.period_unit)
+
+    def current_period(self, now: datetime) -> int:
+        now = ensure_utc(now)
+        anchor = ensure_utc(self.anchor)
+        if now < anchor:
+            return 0
+        if self.period_count <= 0:
+            raise ValueError("period_count must be positive")
+        if self.period_unit == SubscriptionPeriodUnit.DAY:
+            return int((now - anchor) // timedelta(days=self.period_count))
+        if self.period_unit == SubscriptionPeriodUnit.WEEK:
+            return int((now - anchor) // timedelta(weeks=self.period_count))
+        raise ValueError("calendar-month subscription accounting requires method-specific handling")
+
+    def can_renew(self, now: datetime) -> tuple[bool, int]:
+        if self.revoked:
+            return False, 0
+        now = ensure_utc(now)
+        if self.canceled_at is not None and now >= ensure_utc(self.canceled_at):
+            return False, 0
+        period = self.current_period(now)
+        return period > self.last_paid_period, period
+
+    def record_renewal(self, now: datetime) -> int:
+        allowed, period = self.can_renew(now)
+        if not allowed:
+            raise ValueError(f"subscription period {period} cannot renew")
+        self.last_paid_period = period
+        return period
+
+
 def normalize_period_unit(period_unit: SubscriptionPeriodUnit | str) -> SubscriptionPeriodUnit:
     """Normalize a period unit from wire value."""
     if isinstance(period_unit, SubscriptionPeriodUnit):
@@ -132,3 +177,10 @@ def parse_subscription_expires(value: str) -> datetime:
     if parsed.tzinfo is None:
         raise ValueError(f"invalid subscriptionExpires: {value}")
     return parsed.astimezone(UTC)
+
+
+def ensure_utc(value: datetime) -> datetime:
+    """Return a timezone-aware UTC datetime."""
+    if value.tzinfo is None:
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)

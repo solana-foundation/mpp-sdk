@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 import pytest
 
 from solana_mpp.protocol.subscriptions import (
+    SubscriptionAccountState,
     SubscriptionPeriodUnit,
     SubscriptionReceipt,
     SubscriptionRequest,
@@ -99,3 +100,55 @@ def test_subscription_receipt_to_dict_uses_wire_field_names() -> None:
         "subscriptionId": "c3ViXzAxMjM0NTY",
         "timestamp": "2026-01-15T12:03:10Z",
     }
+
+
+def test_subscription_account_state_records_one_renewal_per_period() -> None:
+    state = SubscriptionAccountState(
+        subscription_id="sub_1",
+        anchor=datetime(2026, 1, 15, 12, 3, 10, tzinfo=UTC),
+        period_unit=SubscriptionPeriodUnit.DAY,
+        period_count=30,
+        last_paid_period=0,
+    )
+
+    assert state.record_renewal(datetime(2026, 2, 14, 12, 3, 10, tzinfo=UTC)) == 1
+
+    with pytest.raises(ValueError, match="cannot renew"):
+        state.record_renewal(datetime(2026, 2, 15, tzinfo=UTC))
+
+
+def test_subscription_account_state_missed_periods_do_not_accumulate() -> None:
+    state = SubscriptionAccountState(
+        subscription_id="sub_1",
+        anchor=datetime(2026, 1, 15, 12, 3, 10, tzinfo=UTC),
+        period_unit=SubscriptionPeriodUnit.DAY,
+        period_count=30,
+        last_paid_period=0,
+    )
+
+    assert state.record_renewal(datetime(2026, 4, 15, 12, 3, 10, tzinfo=UTC)) == 3
+    assert state.last_paid_period == 3
+
+
+def test_subscription_account_state_rejects_canceled_revoked_and_month_accounting() -> None:
+    state = SubscriptionAccountState(
+        subscription_id="sub_1",
+        anchor=datetime(2026, 1, 15, 12, 3, 10, tzinfo=UTC),
+        period_unit=SubscriptionPeriodUnit.DAY,
+        period_count=30,
+        last_paid_period=0,
+        canceled_at=datetime(2026, 2, 1, tzinfo=UTC),
+    )
+
+    allowed, _ = state.can_renew(datetime(2026, 2, 14, 12, 3, 10, tzinfo=UTC))
+    assert not allowed
+
+    state.canceled_at = None
+    state.revoked = True
+    allowed, _ = state.can_renew(datetime(2026, 2, 14, 12, 3, 10, tzinfo=UTC))
+    assert not allowed
+
+    state.revoked = False
+    state.period_unit = SubscriptionPeriodUnit.MONTH
+    with pytest.raises(ValueError, match="calendar-month"):
+        state.current_period(datetime(2026, 2, 14, 12, 3, 10, tzinfo=UTC))
