@@ -28,24 +28,65 @@ end
 local function parse_auth_params(input)
   local params = {}
   local i = 1
+  local first = true
+
   while i <= #input do
-    while i <= #input and input:sub(i, i):match('[%s,]') do
+    while i <= #input and input:sub(i, i):match('%s') do
       i = i + 1
     end
     if i > #input then
       break
     end
-    local eq = input:find('=', i, true)
-    if not eq then
+
+    if not first then
+      if input:sub(i, i) ~= ',' then
+        error('invalid auth parameter separator')
+      end
+      i = i + 1
+      while i <= #input and input:sub(i, i):match('%s') do
+        i = i + 1
+      end
+      if i > #input then
+        error('invalid auth parameter')
+      end
+    elseif input:sub(i, i) == ',' then
       error('invalid auth parameter')
     end
-    local key = input:sub(i, eq - 1):gsub('%s+$', '')
-    i = eq + 1
+
+    local key_start = i
+    while i <= #input do
+      local ch = input:sub(i, i)
+      if ch == '=' or ch == ',' or ch:match('%s') then
+        break
+      end
+      i = i + 1
+    end
+    local key = input:sub(key_start, i - 1)
+    if key == '' then
+      error('invalid auth parameter')
+    end
+
+    while i <= #input and input:sub(i, i):match('%s') do
+      i = i + 1
+    end
+    if input:sub(i, i) ~= '=' then
+      error('invalid auth parameter')
+    end
+    i = i + 1
+
+    while i <= #input and input:sub(i, i):match('%s') do
+      i = i + 1
+    end
+    if i > #input then
+      error('invalid auth parameter')
+    end
+
     local value
     if input:sub(i, i) == '"' then
       i = i + 1
       local out = {}
       local escaped = false
+      local closed = false
       while i <= #input do
         local ch = input:sub(i, i)
         i = i + 1
@@ -55,26 +96,35 @@ local function parse_auth_params(input)
         elseif ch == '\\' then
           escaped = true
         elseif ch == '"' then
+          closed = true
           break
         else
           out[#out + 1] = ch
         end
       end
+      if not closed then
+        error('unterminated quoted value')
+      end
       value = table.concat(out)
     else
-      local next_comma = input:find(',', i, true)
-      if next_comma then
-        value = input:sub(i, next_comma - 1):gsub('%s+$', '')
-        i = next_comma + 1
-      else
-        value = input:sub(i):gsub('%s+$', '')
-        i = #input + 1
+      local value_start = i
+      while i <= #input do
+        local ch = input:sub(i, i)
+        if ch == ',' or ch:match('%s') then
+          break
+        end
+        i = i + 1
+      end
+      value = input:sub(value_start, i - 1)
+      if value == '' then
+        error('invalid auth parameter')
       end
     end
     if params[key] ~= nil then
       error('duplicate parameter: ' .. key)
     end
     params[key] = value
+    first = false
   end
   return params
 end
