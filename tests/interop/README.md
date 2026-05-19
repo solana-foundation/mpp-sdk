@@ -2,10 +2,9 @@
 
 This directory contains the cross-language MPP interoperability tests.
 
-There are currently two interop layers:
-
-- `test_*.py` runs the legacy Python client conformance suite against language-specific payment link servers.
-- `src/` and `test/e2e.test.ts` run process-based client/server adapters against Surfpool. This is the adapter contract new language implementations should target.
+The active interop layer is the TypeScript/Vitest process harness in `src/`
+and `test/e2e.test.ts`. This is the adapter contract new language
+implementations should target.
 
 ## Process adapter contract
 

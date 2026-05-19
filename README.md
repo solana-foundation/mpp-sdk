@@ -31,9 +31,9 @@ Every implementation is validated at three levels:
 
 1. **Unit tests** — each SDK has its own test suite with coverage enforcement
 2. **E2E payment tests** — Playwright browser tests verify the full payment link flow (wallet → transaction → service worker → on-chain verification) against Surfpool
-3. **Cross-language interop** — a shared Python test suite runs the same protocol conformance tests against every server implementation, proving that any client can pay any server
+3. **Cross-language interop** — a TypeScript/Vitest process harness runs language client and server adapters against Surfpool, proving that enabled clients and servers stay protocol-compatible
 
-The interop matrix tests every client against every server. A shared Python test suite builds real Solana transactions and submits them to each server, verifying on-chain settlement via Surfpool. This catches protocol divergences that per-language unit tests miss.
+The interop harness can run a full client/server cross-product, but CI keeps the default matrix small and intentional: enabled clients are tested against the Rust server, and the Rust client is tested against enabled servers. The harness builds real Solana transactions and verifies on-chain settlement via Surfpool, catching protocol divergences that per-language unit tests miss.
 
 ```
           Clients                          Servers
@@ -60,7 +60,7 @@ The interop matrix tests every client against every server. A shared Python test
 | Go | ![Go](https://img.shields.io/badge/coverage-84%25-green) | `just go-test` |
 | Python | ![Python](https://img.shields.io/badge/coverage-87%25-green) | `just py-test` |
 | Lua | ![Lua](https://img.shields.io/badge/coverage-41_tests-blue) | `just lua-test` |
-| Interop | ![Interop](https://img.shields.io/badge/interop-20_tests_×_4_servers-brightgreen) | `pytest tests/interop/` |
+| Interop | ![Interop](https://img.shields.io/badge/interop-TypeScript_harness-brightgreen) | `cd tests/interop && pnpm test` |
 
 See [`tests/interop/README.md`](tests/interop/README.md) for the process adapter contract used by the Surfpool-backed client/server matrix.
 
