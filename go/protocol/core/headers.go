@@ -304,26 +304,66 @@ func escapeQuotedValue(value string) string {
 
 func parseAuthParams(input string) (map[string]string, error) {
 	params := map[string]string{}
-	for len(strings.TrimSpace(input)) > 0 {
-		input = strings.TrimLeft(input, " \t,")
-		if input == "" {
+	i := 0
+	first := true
+	for {
+		for i < len(input) && (input[i] == ' ' || input[i] == '\t') {
+			i++
+		}
+		if i >= len(input) {
 			break
 		}
-		eq := strings.IndexByte(input, '=')
-		if eq <= 0 {
+
+		if !first {
+			if input[i] != ',' {
+				return nil, fmt.Errorf("invalid auth parameter separator")
+			}
+			i++
+			for i < len(input) && (input[i] == ' ' || input[i] == '\t') {
+				i++
+			}
+			if i >= len(input) {
+				return nil, fmt.Errorf("invalid auth parameter")
+			}
+		} else if input[i] == ',' {
 			return nil, fmt.Errorf("invalid auth parameter")
 		}
-		key := strings.TrimSpace(input[:eq])
-		input = input[eq+1:]
+
+		keyStart := i
+		for i < len(input) && input[i] != '=' && input[i] != ',' && input[i] != ' ' && input[i] != '\t' {
+			i++
+		}
+		key := input[keyStart:i]
+		if key == "" {
+			return nil, fmt.Errorf("invalid auth parameter")
+		}
+
+		for i < len(input) && (input[i] == ' ' || input[i] == '\t') {
+			i++
+		}
+		if i >= len(input) || input[i] != '=' {
+			return nil, fmt.Errorf("invalid auth parameter")
+		}
+		i++
+
+		for i < len(input) && (input[i] == ' ' || input[i] == '\t') {
+			i++
+		}
+		if i >= len(input) {
+			return nil, fmt.Errorf("invalid auth parameter")
+		}
+
 		var value string
-		if strings.HasPrefix(input, `"`) {
-			input = input[1:]
+		if input[i] == '"' {
+			i++
 			var builder strings.Builder
 			escaped := false
-			consumed := -1
-			for i, ch := range input {
+			closed := false
+			for i < len(input) {
+				ch := input[i]
+				i++
 				if escaped {
-					builder.WriteRune(ch)
+					builder.WriteByte(ch)
 					escaped = false
 					continue
 				}
@@ -333,29 +373,29 @@ func parseAuthParams(input string) (map[string]string, error) {
 				}
 				if ch == '"' {
 					value = builder.String()
-					consumed = i + 1
+					closed = true
 					break
 				}
-				builder.WriteRune(ch)
+				builder.WriteByte(ch)
 			}
-			if consumed == -1 {
+			if !closed {
 				return nil, fmt.Errorf("unterminated quoted value")
 			}
-			input = input[consumed:]
 		} else {
-			next := strings.IndexByte(input, ',')
-			if next == -1 {
-				value = strings.TrimSpace(input)
-				input = ""
-			} else {
-				value = strings.TrimSpace(input[:next])
-				input = input[next+1:]
+			valueStart := i
+			for i < len(input) && input[i] != ',' && input[i] != ' ' && input[i] != '\t' {
+				i++
+			}
+			value = input[valueStart:i]
+			if value == "" {
+				return nil, fmt.Errorf("invalid auth parameter")
 			}
 		}
 		if _, exists := params[key]; exists {
 			return nil, fmt.Errorf("duplicate parameter: %s", key)
 		}
 		params[key] = value
+		first = false
 	}
 	return params, nil
 }

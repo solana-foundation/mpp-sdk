@@ -2,6 +2,7 @@ package core
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 )
 
@@ -18,6 +19,31 @@ func TestWWWAuthenticateRoundTrip(t *testing.T) {
 	}
 	if parsed.ID != challenge.ID || parsed.Realm != challenge.Realm || parsed.Request.Raw() != challenge.Request.Raw() {
 		t.Fatalf("unexpected parsed challenge: %#v", parsed)
+	}
+}
+
+func TestParseWWWAuthenticateRejectsMalformedAuthParams(t *testing.T) {
+	request, _ := NewBase64URLJSONValue(map[string]string{"amount": "1000", "currency": "sol"})
+	challenge := NewChallengeWithSecret("secret", "realm", NewMethodName("solana"), NewIntentName("charge"), request)
+	header, err := FormatWWWAuthenticate(challenge)
+	if err != nil {
+		t.Fatalf("format failed: %v", err)
+	}
+
+	tests := []struct {
+		name   string
+		header string
+	}{
+		{"missing separator", strings.Replace(header, `, realm=`, ` realm=`, 1)},
+		{"trailing junk", header + " trailing"},
+		{"unterminated quoted value", header + `, opaque="unterminated`},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := ParseWWWAuthenticate(tc.header); err == nil {
+				t.Fatal("expected error")
+			}
+		})
 	}
 }
 
