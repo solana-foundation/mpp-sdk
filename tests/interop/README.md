@@ -104,6 +104,7 @@ Run one adapter pair when isolating a failure:
 ```bash
 MPP_INTEROP_CLIENTS=rust MPP_INTEROP_SERVERS=typescript pnpm test
 MPP_INTEROP_CLIENTS=typescript MPP_INTEROP_SERVERS=rust pnpm test
+MPP_INTEROP_CLIENTS=typescript MPP_INTEROP_SERVERS=go pnpm test
 ```
 
 If either selection variable names no registered adapter, the suite fails with
