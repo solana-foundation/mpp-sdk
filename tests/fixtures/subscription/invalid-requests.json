@@ -1,0 +1,48 @@
+[
+  {
+    "name": "zero amount",
+    "request": {
+      "amount": "0",
+      "currency": "usd",
+      "periodUnit": "month",
+      "periodCount": "1"
+    }
+  },
+  {
+    "name": "decimal amount",
+    "request": {
+      "amount": "9.99",
+      "currency": "usd",
+      "periodUnit": "month",
+      "periodCount": "1"
+    }
+  },
+  {
+    "name": "unsupported period unit",
+    "request": {
+      "amount": "1000000",
+      "currency": "usd",
+      "periodUnit": "year",
+      "periodCount": "1"
+    }
+  },
+  {
+    "name": "zero period count",
+    "request": {
+      "amount": "1000000",
+      "currency": "usd",
+      "periodUnit": "month",
+      "periodCount": "0"
+    }
+  },
+  {
+    "name": "invalid subscription expiry",
+    "request": {
+      "amount": "1000000",
+      "currency": "usd",
+      "periodUnit": "month",
+      "periodCount": "1",
+      "subscriptionExpires": "not-a-date"
+    }
+  }
+]

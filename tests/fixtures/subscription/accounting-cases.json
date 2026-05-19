@@ -1,0 +1,44 @@
+[
+  {
+    "name": "activation records period zero",
+    "anchor": "2026-01-15T12:03:10Z",
+    "now": "2026-01-20T00:00:00Z",
+    "periodUnit": "day",
+    "periodCount": "30",
+    "lastPaidPeriod": 0,
+    "expectedCurrentPeriod": 0,
+    "renewalAllowed": false
+  },
+  {
+    "name": "next period can renew once",
+    "anchor": "2026-01-15T12:03:10Z",
+    "now": "2026-02-14T12:03:10Z",
+    "periodUnit": "day",
+    "periodCount": "30",
+    "lastPaidPeriod": 0,
+    "expectedCurrentPeriod": 1,
+    "renewalAllowed": true
+  },
+  {
+    "name": "missed period does not accumulate",
+    "anchor": "2026-01-15T12:03:10Z",
+    "now": "2026-04-15T12:03:10Z",
+    "periodUnit": "day",
+    "periodCount": "30",
+    "lastPaidPeriod": 0,
+    "expectedCurrentPeriod": 3,
+    "renewalAllowed": true,
+    "maximumNewCharges": 1
+  },
+  {
+    "name": "canceled subscription cannot renew",
+    "anchor": "2026-01-15T12:03:10Z",
+    "now": "2026-02-14T12:03:10Z",
+    "periodUnit": "day",
+    "periodCount": "30",
+    "lastPaidPeriod": 0,
+    "canceledAt": "2026-02-01T00:00:00Z",
+    "expectedCurrentPeriod": 1,
+    "renewalAllowed": false
+  }
+]

@@ -1,0 +1,15 @@
+{
+  "amount": "10000000",
+  "currency": "0x20c0000000000000000000000000000000000001",
+  "periodUnit": "day",
+  "periodCount": "30",
+  "subscriptionExpires": "2026-07-14T12:00:00Z",
+  "recipient": "0x742d35cc6634c0532925a3b844bc9e7595f8fe00",
+  "methodDetails": {
+    "accessKey": {
+      "accessKeyAddress": "0x1111111111111111111111111111111111111111",
+      "keyType": "p256"
+    },
+    "chainId": 42431
+  }
+}
