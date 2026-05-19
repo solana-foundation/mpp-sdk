@@ -43,6 +43,12 @@ function createSplMintAccountData(decimals: number): Uint8Array {
 }
 
 const socketSupport = await canBindLocalSocket();
+const activeServers = serverImplementations.filter(implementation => implementation.enabled);
+const activeClients = clientImplementations.filter(implementation => implementation.enabled);
+
+function implementationIds(implementations: typeof serverImplementations): string {
+  return implementations.map(implementation => implementation.id).join(", ");
+}
 
 beforeAll(async () => {
   if (!socketSupport) {
@@ -80,45 +86,55 @@ afterEach(async () => {
 });
 
 describe("mpp interop", () => {
-  const activeServers = serverImplementations.filter(implementation => implementation.enabled);
-  const activeClients = clientImplementations.filter(implementation => implementation.enabled);
   const socketAwareIt = socketSupport ? it : it.skip;
 
-  for (const serverImplementation of activeServers) {
-    for (const clientImplementation of activeClients) {
-      socketAwareIt(`${clientImplementation.id} client pays ${serverImplementation.id} server`, async () => {
-        if (!surfnet || !interopEnv) {
-          throw new Error("Surfpool interop environment was not initialized");
-        }
+  if (activeServers.length === 0 || activeClients.length === 0) {
+    it("has at least one enabled client and server adapter", () => {
+      throw new Error(
+        `No interop adapter pairs selected. Enabled clients: ${
+          activeClients.map(client => client.id).join(", ") || "(none)"
+        }; enabled servers: ${activeServers.map(server => server.id).join(", ") || "(none)"}. ` +
+          `Set MPP_INTEROP_CLIENTS to one of: ${implementationIds(clientImplementations)}. ` +
+          `Set MPP_INTEROP_SERVERS to one of: ${implementationIds(serverImplementations)}.`,
+      );
+    });
+  } else {
+    for (const serverImplementation of activeServers) {
+      for (const clientImplementation of activeClients) {
+        socketAwareIt(`${clientImplementation.id} client pays ${serverImplementation.id} server`, async () => {
+          if (!surfnet || !interopEnv) {
+            throw new Error("Surfpool interop environment was not initialized");
+          }
 
-        const initialBalance = await getTokenBalance(
-          surfnet,
-          interopEnv.MPP_INTEROP_PAY_TO,
-          interopEnv.MPP_INTEROP_MINT,
-        );
+          const initialBalance = await getTokenBalance(
+            surfnet,
+            interopEnv.MPP_INTEROP_PAY_TO,
+            interopEnv.MPP_INTEROP_MINT,
+          );
 
-        const server = await startServer(serverImplementation, interopEnv);
-        runningServers.push(server);
+          const server = await startServer(serverImplementation, interopEnv);
+          runningServers.push(server);
 
-        const targetUrl = `http://127.0.0.1:${server.ready.port}${interopScenario.resourcePath}`;
-        const result = await runClient(clientImplementation, targetUrl, interopEnv);
+          const targetUrl = `http://127.0.0.1:${server.ready.port}${interopScenario.resourcePath}`;
+          const result = await runClient(clientImplementation, targetUrl, interopEnv);
 
-        const finalBalance = await getTokenBalance(
-          surfnet,
-          interopEnv.MPP_INTEROP_PAY_TO,
-          interopEnv.MPP_INTEROP_MINT,
-        );
+          const finalBalance = await getTokenBalance(
+            surfnet,
+            interopEnv.MPP_INTEROP_PAY_TO,
+            interopEnv.MPP_INTEROP_MINT,
+          );
 
-        expect(result.ok, JSON.stringify(result, null, 2)).toBe(true);
-        expect(result.status).toBe(200);
-        expect(result.responseBody).toMatchObject({
-          ok: true,
-          paid: true,
+          expect(result.ok, JSON.stringify(result, null, 2)).toBe(true);
+          expect(result.status).toBe(200);
+          expect(result.responseBody).toMatchObject({
+            ok: true,
+            paid: true,
+          });
+          expect(typeof result.settlement).toBe("string");
+          expect(result.settlement).not.toHaveLength(0);
+          expect(finalBalance - initialBalance).toBe(BigInt(interopScenario.amount));
         });
-        expect(typeof result.settlement).toBe("string");
-        expect(result.settlement).not.toHaveLength(0);
-        expect(finalBalance - initialBalance).toBe(BigInt(interopScenario.amount));
-      });
+      }
     }
   }
 });
