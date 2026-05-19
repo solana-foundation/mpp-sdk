@@ -74,4 +74,11 @@ export const serverImplementations: ImplementationDefinition[] = [
     ],
     enabled: isEnabled("rust", "MPP_INTEROP_SERVERS", true),
   },
+  {
+    id: "go",
+    label: "Go HTTP server",
+    role: "server",
+    command: ["sh", "-c", "cd go-server && go run ."],
+    enabled: isEnabled("go", "MPP_INTEROP_SERVERS", false),
+  },
 ];
