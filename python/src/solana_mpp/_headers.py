@@ -328,29 +328,46 @@ def _parse_auth_params(params_str: str) -> dict[str, str]:
     params: dict[str, str] = {}
     chars = list(params_str)
     i = 0
+    first = True
 
     while i < len(chars):
-        # Skip whitespace and commas
-        while i < len(chars) and (chars[i] in (" ", "\t", ",")):
+        while i < len(chars) and chars[i] in (" ", "\t"):
             i += 1
         if i >= len(chars):
             break
+
+        if first:
+            if chars[i] == ",":
+                raise ParseError("Malformed authentication parameters")
+        else:
+            if chars[i] != ",":
+                raise ParseError("Malformed authentication parameters")
+            i += 1
+            while i < len(chars) and chars[i] in (" ", "\t"):
+                i += 1
+            if i >= len(chars):
+                raise ParseError("Malformed authentication parameters")
 
         # Read key
         key_start = i
-        while i < len(chars) and chars[i] != "=" and chars[i] not in (" ", "\t"):
+        while i < len(chars) and chars[i] not in ("=", " ", "\t", ","):
             i += 1
-        if i >= len(chars) or chars[i] != "=":
-            # Skip to next comma or whitespace
-            while i < len(chars) and chars[i] not in (" ", "\t", ","):
-                i += 1
-            continue
+        if i == key_start:
+            raise ParseError("Malformed authentication parameters")
 
         key = "".join(chars[key_start:i])
+
+        while i < len(chars) and chars[i] in (" ", "\t"):
+            i += 1
+        if i >= len(chars) or chars[i] != "=":
+            raise ParseError("Malformed authentication parameters")
+
         i += 1  # skip '='
 
+        while i < len(chars) and chars[i] in (" ", "\t"):
+            i += 1
         if i >= len(chars):
-            break
+            raise ParseError("Malformed authentication parameters")
 
         # Read value
         if chars[i] == '"':
@@ -363,17 +380,21 @@ def _parse_auth_params(params_str: str) -> dict[str, str]:
                 else:
                     value_parts.append(chars[i])
                 i += 1
-            if i < len(chars):
-                i += 1  # skip closing quote
+            if i >= len(chars):
+                raise ParseError("Malformed authentication parameters")
+            i += 1  # skip closing quote
             value = "".join(value_parts)
         else:
             value_start = i
             while i < len(chars) and chars[i] not in (" ", "\t", ","):
                 i += 1
+            if i == value_start:
+                raise ParseError("Malformed authentication parameters")
             value = "".join(chars[value_start:i])
 
         if key in params:
             raise ParseError(f"Duplicate parameter: {key}")
         params[key] = value
+        first = False
 
     return params
