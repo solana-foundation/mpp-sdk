@@ -71,7 +71,7 @@ async function main() {
 
       if (
         request.method !== "GET" ||
-        url.pathname !== environment.resourcePath
+        !isProtectedPath(url.pathname, environment)
       ) {
         response.writeHead(404, { "content-type": "application/json" });
         response.end(JSON.stringify({ error: "not_found" }));
@@ -79,7 +79,7 @@ async function main() {
       }
 
       const result = await mppx.charge({
-        amount: environment.amount,
+        amount: amountForPath(url.pathname, environment),
         currency: environment.mint,
         description: "Surfpool-backed protected content",
       })(toWebRequest(request, body));
@@ -141,6 +141,26 @@ async function main() {
 
   process.on("SIGTERM", shutdown);
   process.on("SIGINT", shutdown);
+}
+
+function isProtectedPath(
+  path: string,
+  environment: ReturnType<typeof readInteropEnvironment>,
+): boolean {
+  return (
+    path === environment.resourcePath ||
+    path === environment.replaySource?.resourcePath
+  );
+}
+
+function amountForPath(
+  path: string,
+  environment: ReturnType<typeof readInteropEnvironment>,
+): string {
+  if (path === environment.replaySource?.resourcePath) {
+    return environment.replaySource.amount;
+  }
+  return environment.amount;
 }
 
 void main();

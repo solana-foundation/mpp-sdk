@@ -71,6 +71,9 @@ The Vitest harness prepares Surfpool state and passes these variables to each ad
 - `MPP_INTEROP_FEE_PAYER_SECRET_KEY`: JSON array for the server fee payer keypair
 - `MPP_INTEROP_PAY_TO`: expected recipient public key
 - `MPP_INTEROP_TARGET_URL`: client-only target URL
+- `MPP_INTEROP_REPLAY_SOURCE_PATH`: optional cheaper source route for cross-route replay tests
+- `MPP_INTEROP_REPLAY_SOURCE_PRICE`: optional source route display price
+- `MPP_INTEROP_REPLAY_SOURCE_AMOUNT`: optional source route integer amount
 
 The canonical scenario values, including integer amounts, split recipients, and
 expected success/failure status, live in `src/contracts.ts`.
@@ -109,16 +112,18 @@ Use these environment variables to filter the active matrix:
 - `MPP_INTEROP_CLIENTS=typescript,rust`
 - `MPP_INTEROP_SERVERS=typescript,rust`
 - `MPP_INTEROP_INTENTS=charge`
-- `MPP_INTEROP_SCENARIOS=charge-basic,charge-split-ata,charge-network-mismatch`
+- `MPP_INTEROP_SCENARIOS=charge-basic,charge-split-ata,charge-network-mismatch,charge-cross-route-replay`
 
 The current scenario set covers only the `charge` intent. It includes a basic
 payment, a split payment that requires the server fee payer to create the split
-recipient ATA, and a negative network-mismatch payment. Scenarios can restrict
-the clients or servers they run against when an adapter does not yet report a
-structured failure for that negative case. Selecting `session` or `subscription`
-currently fails fast with a clear unsupported-intent error. Future coverage for
-those intents should add explicit scenarios behind the same selector instead of
-widening the default CI matrix implicitly.
+recipient ATA, a negative network-mismatch payment, and a cross-route replay
+attempt where a credential issued for a cheaper route is replayed against a
+more expensive route. Scenarios can restrict the clients or servers they run
+against when an adapter does not yet report a structured failure for that
+negative case. Selecting `session` or `subscription` currently fails fast with a
+clear unsupported-intent error. Future coverage for those intents should add
+explicit scenarios behind the same selector instead of widening the default CI
+matrix implicitly.
 
 ## Running
 

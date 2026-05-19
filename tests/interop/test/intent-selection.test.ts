@@ -23,7 +23,12 @@ describe("interop scenario selection", () => {
       selectInteropScenarios(undefined, undefined).map(
         (scenario) => scenario.id,
       ),
-    ).toEqual(["charge-basic", "charge-split-ata", "charge-network-mismatch"]);
+    ).toEqual([
+      "charge-basic",
+      "charge-split-ata",
+      "charge-network-mismatch",
+      "charge-cross-route-replay",
+    ]);
   });
 
   it("runs one requested scenario", () => {

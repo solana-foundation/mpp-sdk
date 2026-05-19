@@ -223,6 +223,13 @@ function environmentForScenario(
     MPP_INTEROP_NETWORK: scenario.network,
     MPP_INTEROP_PRICE: scenario.price,
     MPP_INTEROP_RESOURCE_PATH: scenario.resourcePath,
+    ...(scenario.replaySource
+      ? {
+          MPP_INTEROP_REPLAY_SOURCE_AMOUNT: scenario.replaySource.amount,
+          MPP_INTEROP_REPLAY_SOURCE_PATH: scenario.replaySource.resourcePath,
+          MPP_INTEROP_REPLAY_SOURCE_PRICE: scenario.replaySource.price,
+        }
+      : {}),
     MPP_INTEROP_SETTLEMENT_HEADER: scenario.settlementHeader,
     MPP_INTEROP_SPLITS: JSON.stringify(
       (scenario.splits ?? []).map((split) => ({

@@ -19,6 +19,11 @@ export type InteropScenario = {
   resourcePath: string;
   settlementHeader: string;
   splits?: InteropScenarioSplit[];
+  replaySource?: {
+    resourcePath: string;
+    price: string;
+    amount: string;
+  };
   expectedStatus: 200 | 402;
   clientIds?: string[];
   serverIds?: string[];
@@ -85,6 +90,23 @@ export const interopScenarios: readonly InteropScenario[] = [
     asset: "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
     resourcePath: "/protected/network-mismatch",
     settlementHeader: "x-fixture-settlement",
+    expectedStatus: 402,
+    clientIds: ["typescript"],
+  },
+  {
+    id: "charge-cross-route-replay",
+    intent: "charge",
+    network: "localnet",
+    price: "0.001",
+    amount: "1000",
+    asset: "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+    resourcePath: "/protected/expensive",
+    settlementHeader: "x-fixture-settlement",
+    replaySource: {
+      resourcePath: "/protected/cheap",
+      price: "0.0005",
+      amount: "500",
+    },
     expectedStatus: 402,
     clientIds: ["typescript"],
   },

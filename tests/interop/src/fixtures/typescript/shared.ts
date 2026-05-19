@@ -6,6 +6,11 @@ export type InteropEnvironment = {
   mint: string;
   amount: string;
   resourcePath: string;
+  replaySource?: {
+    amount: string;
+    price: string;
+    resourcePath: string;
+  };
   settlementHeader: string;
   payTo: string;
   secretKey: string;
@@ -42,6 +47,16 @@ export function readInteropEnvironment(): InteropEnvironment {
     amount: process.env.MPP_INTEROP_AMOUNT ?? interopScenario.amount,
     resourcePath:
       process.env.MPP_INTEROP_RESOURCE_PATH ?? interopScenario.resourcePath,
+    replaySource:
+      process.env.MPP_INTEROP_REPLAY_SOURCE_PATH &&
+      process.env.MPP_INTEROP_REPLAY_SOURCE_AMOUNT &&
+      process.env.MPP_INTEROP_REPLAY_SOURCE_PRICE
+        ? {
+            amount: process.env.MPP_INTEROP_REPLAY_SOURCE_AMOUNT,
+            price: process.env.MPP_INTEROP_REPLAY_SOURCE_PRICE,
+            resourcePath: process.env.MPP_INTEROP_REPLAY_SOURCE_PATH,
+          }
+        : undefined,
     settlementHeader:
       process.env.MPP_INTEROP_SETTLEMENT_HEADER ??
       interopScenario.settlementHeader,
