@@ -1,5 +1,12 @@
 export type AdapterKind = "client" | "server";
 
+export type InteropCapability = "charge" | "subscription-plan";
+
+export const interopCapabilityLabels: Record<InteropCapability, string> = {
+  charge: "one-time charge",
+  "subscription-plan": "subscription plan",
+};
+
 export type InteropScenario = {
   intent: "charge";
   network: string;
@@ -15,7 +22,7 @@ export type ReadyMessage = {
   implementation: string;
   role: AdapterKind;
   port?: number;
-  capabilities?: string[];
+  capabilities?: InteropCapability[];
 };
 
 export type ClientRunResult = {

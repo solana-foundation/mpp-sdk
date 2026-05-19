@@ -28,6 +28,12 @@ Required fields:
 - `role`: `"server"`
 - `port`: local TCP port where the protected resource is served
 
+Optional fields:
+
+- `capabilities`: list of supported interop capability labels. Current labels
+  are `charge` for one-time payments and `subscription-plan` for the planned
+  subscription harness.
+
 The server must expose the shared scenario resource path from `interopScenario.resourcePath` and protect it with the MPP `charge` flow. It should return a successful JSON response after payment and include the settlement header named by `interopScenario.settlementHeader`.
 
 ### Client adapters
@@ -74,6 +80,49 @@ The Vitest harness prepares Surfpool state and passes these variables to each ad
 - `MPP_INTEROP_TARGET_URL`: client-only target URL
 
 The canonical scenario values, including the integer amount expected to settle, live in `src/contracts.ts`.
+
+## Subscription interop plan
+
+Subscription interop is intentionally documented here before the harness enables
+any runtime subscription behavior. The default matrix remains charge-only so
+existing language adapters keep testing the already-supported one-time
+settlement path without requiring each implementation to support plans,
+renewals, or cancellation semantics at the same time.
+
+The planned process-adapter capability label is `subscription-plan`. An adapter
+may advertise it in the `ready.capabilities` array once it can participate in a
+focused subscription matrix. Advertising the label must not change the existing
+`charge` scenario; the harness should select subscription cases explicitly.
+
+Intended lifecycle for subscription support:
+
+1. Keep `interopScenario.intent` set to `charge` for the default matrix.
+2. Add dedicated subscription fixtures that are selected separately from the
+   charge fixture.
+3. Exercise plan discovery or challenge creation before any payment credential
+   is submitted.
+4. Verify the first successful subscription authorization produces a stable plan
+   or subscription identifier.
+5. Verify renewal, replay, cancellation, and expired-plan behavior in focused
+   tests before moving any implementation into the default matrix.
+
+Negative fixtures should be added before enabling default runtime behavior:
+
+- unsupported capability: a client or server that omits `subscription-plan`
+  should be skipped or rejected with a clear harness error instead of falling
+  back to charge behavior
+- malformed plan terms: missing interval, amount, asset, recipient, or network
+- mismatched credential: a credential signed for a different plan, recipient,
+  asset, amount, network, or interval
+- replayed authorization: a reused subscription authorization where freshness or
+  nonce rules require rejection
+- cancelled or expired plan: a renewal attempt after cancellation or after the
+  plan validity window
+- charge-only endpoint: a subscription client pointed at the current charge
+  fixture must fail deterministically rather than silently paying once
+
+Until those fixtures exist and pass across at least two implementations, the
+default `pnpm test` matrix should continue to run only the `charge` scenario.
 
 ## Adding an implementation
 
