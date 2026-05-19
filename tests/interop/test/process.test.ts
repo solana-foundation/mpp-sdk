@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import type { ImplementationDefinition } from "../src/implementations";
 import { runClient, startServer, stopServer } from "../src/process";
 
@@ -17,6 +17,16 @@ function adapter(
 }
 
 describe("process adapter diagnostics", () => {
+  const originalAdapterTimeout = process.env.MPP_INTEROP_ADAPTER_TIMEOUT_MS;
+
+  afterEach(() => {
+    if (originalAdapterTimeout === undefined) {
+      delete process.env.MPP_INTEROP_ADAPTER_TIMEOUT_MS;
+    } else {
+      process.env.MPP_INTEROP_ADAPTER_TIMEOUT_MS = originalAdapterTimeout;
+    }
+  });
+
   it("includes adapter identity when stdout is not JSON", async () => {
     await expect(
       startServer(adapter("server", "bad-json", 'console.log("not json")')),
@@ -40,6 +50,23 @@ describe("process adapter diagnostics", () => {
       runClient(adapter("client", "stderr-client", 'console.error("adapter exploded"); process.exit(7)'), "http://127.0.0.1"),
     ).rejects.toThrow(/adapter exploded/);
   });
+
+  it("uses MPP_INTEROP_ADAPTER_TIMEOUT_MS for local timeout debugging", async () => {
+    process.env.MPP_INTEROP_ADAPTER_TIMEOUT_MS = "10";
+
+    await expect(
+      startServer(adapter("server", "silent-server", "setInterval(() => {}, 1000)")),
+    ).rejects.toThrow(/Timed out waiting for server adapter silent-server .* after 10ms/);
+  });
+
+  it("rejects invalid MPP_INTEROP_ADAPTER_TIMEOUT_MS values", async () => {
+    process.env.MPP_INTEROP_ADAPTER_TIMEOUT_MS = "not-a-number";
+
+    await expect(
+      startServer(adapter("server", "timeout-config-server", "setInterval(() => {}, 1000)")),
+    ).rejects.toThrow(/MPP_INTEROP_ADAPTER_TIMEOUT_MS must be a positive integer/);
+  });
+
 
   it("rejects client adapters that report the wrong implementation id", async () => {
     await expect(

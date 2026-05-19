@@ -9,7 +9,7 @@ type RunningServer = {
   ready: ReadyMessage;
 };
 
-const ADAPTER_OUTPUT_TIMEOUT_MS = 120_000;
+const DEFAULT_ADAPTER_OUTPUT_TIMEOUT_MS = 120_000;
 const STDERR_TAIL_BYTES = 8_192;
 
 type AdapterDebugContext = {
@@ -34,6 +34,20 @@ function stderrTail(child: ChildProcess): string {
   const context = adapterDebug.get(child);
   const stderr = context?.stderr.trim();
   return stderr ? `\nLast stderr:\n${stderr}` : "";
+}
+
+function adapterOutputTimeoutMs(): number {
+  const raw = process.env.MPP_INTEROP_ADAPTER_TIMEOUT_MS;
+  if (!raw) {
+    return DEFAULT_ADAPTER_OUTPUT_TIMEOUT_MS;
+  }
+
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    throw new Error(`MPP_INTEROP_ADAPTER_TIMEOUT_MS must be a positive integer, got ${raw}`);
+  }
+
+  return parsed;
 }
 
 async function waitForJsonMessage<T extends AdapterMessage>(
@@ -124,8 +138,9 @@ export async function startServer(
   implementation: ImplementationDefinition,
   extraEnv: Record<string, string> = {},
 ): Promise<RunningServer> {
+  const timeoutMs = adapterOutputTimeoutMs();
   const child = spawnAdapter(implementation, extraEnv);
-  const ready = await waitForJsonMessage<ReadyMessage>(child, ADAPTER_OUTPUT_TIMEOUT_MS);
+  const ready = await waitForJsonMessage<ReadyMessage>(child, timeoutMs);
 
   if (ready.type !== "ready" || ready.role !== "server" || !ready.port) {
     child.kill("SIGTERM");
@@ -149,12 +164,13 @@ export async function runClient(
   targetUrl: string,
   extraEnv: Record<string, string> = {},
 ): Promise<ClientRunResult> {
+  const timeoutMs = adapterOutputTimeoutMs();
   const child = spawnAdapter(implementation, {
     MPP_INTEROP_TARGET_URL: targetUrl,
     ...extraEnv,
   });
 
-  const result = await waitForJsonMessage<ClientRunResult>(child, ADAPTER_OUTPUT_TIMEOUT_MS);
+  const result = await waitForJsonMessage<ClientRunResult>(child, timeoutMs);
   await new Promise<void>((resolve, reject) => {
     child.once("exit", code => {
       if (code === 0) {
