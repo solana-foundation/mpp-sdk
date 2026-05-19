@@ -18,6 +18,11 @@
     "format:check": "prettier --check \"packages/*/src/**/*.ts\""
   },
   "prettier": "@solana/prettier-config-solana",
+  "pnpm": {
+    "overrides": {
+      "ws": "^8.20.1"
+    }
+  },
   "devDependencies": {
     "@solana/eslint-config-solana": "^6.0.0",
     "@solana/prettier-config-solana": "^0.0.6",
